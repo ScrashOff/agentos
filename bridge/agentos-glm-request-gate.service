@@ -1,0 +1,18 @@
+[Unit]
+Description=AgentOS shared GLM request slots
+After=network.target
+
+[Service]
+Type=simple
+User=root
+RuntimeDirectory=agentos-glm-gate
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/deepseek-harness/node/bin/node /opt/agentos-bridge/glm-request-gate.mjs --reservations /var/lib/agentos-bridge/glm-legacy-reservations.json --max 6
+# Loss of a permit connection aborts the corresponding model call. Do not start
+# an empty semaphore over uncertain calls after an unexpected gate failure.
+Restart=no
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

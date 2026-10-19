@@ -1,0 +1,36 @@
+# Merge after worker.patch.yml; mount this directory read-only at the path below.
+# Startup must set both values from the persisted run, never from actor content.
+- id: sdk-jsonrpc-server
+  disabled: true
+- insert:
+    - id: agentos-sdk-steering
+      name: /opt/agentos-bridge/sdk-control/sdk-steering-plugin.mjs
+      inject: [sdkAppStartup, loader]
+      config:
+        maxTokensAsSuccess: false
+        runId: !!js process.env.AGENTOS_RUN_ID
+        runFence: !!js process.env.AGENTOS_RUN_FENCE
+        guidanceDeadlineNs: !!js process.env.AGENTOS_GUIDANCE_DEADLINE_NS
+
+# Append to worker-steering.patch.yml; no installed SDK package is changed.
+- insert:
+    - id: agentos-fs-sandbox
+      name: '@deepseek-ai/dsh-fs-sandbox'
+      inject: [sandboxPolicy]
+      config:
+        cwd: /workspace
+    - id: agentos-fs-observation-policy
+      name: '@deepseek-ai/dsh-fs-observation-policy'
+    - id: agentos-readonly-fs
+      name: /opt/agentos-bridge/sdk-control/readonly-fs-plugin.mjs
+      inject: [tools, fs, systemPrompt, sandboxPolicy]
+
+- insert:
+    - id: agentos-guidance-wait
+      name: /opt/agentos-bridge/sdk-control/guidance-wait-plugin.mjs
+      inject: [tools, systemPrompt, guidanceWaitBroker]
+
+- insert:
+    - id: agentos-managed-operation
+      name: /opt/agentos-bridge/sdk-control/managed-operation-plugin.mjs
+      inject: [tools, systemPrompt]

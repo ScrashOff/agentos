@@ -1,0 +1,15 @@
+[Unit]
+Description=AgentOS semantic backlog planner adapter
+After=postgresql@17-agentos.service agentos-workers.service
+[Service]
+WorkingDirectory=/opt/agentos/current
+EnvironmentFile=/etc/agentos/server.env
+Environment=PATH=/opt/deepseek-harness/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/deepseek-harness/node/bin/node --import tsx scripts/backlog-loop.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=300
+KillMode=mixed
+UMask=0077
+[Install]
+WantedBy=multi-user.target

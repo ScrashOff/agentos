@@ -1,0 +1,14 @@
+[Unit]
+Description=AgentOS independent cycles execution engine
+After=network-online.target postgresql@17-agentos.service
+[Service]
+WorkingDirectory=/opt/agentos/current
+EnvironmentFile=/etc/agentos/server.env
+Environment=PATH=/opt/deepseek-harness/node/bin:/usr/bin:/bin
+ExecStart=/opt/deepseek-harness/node/bin/node --import tsx scripts/cycles-loop.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+UMask=0077
+[Install]
+WantedBy=multi-user.target

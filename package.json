@@ -1,0 +1,42 @@
+{
+  "name": "agentos-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "tsx watch server/index.ts",
+    "start": "tsx server/index.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "format:check": "prettier --check server web tests scripts/setup.mjs *.json *.ts",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:stop": "docker compose stop postgres"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.5",
+    "dotenv": "^17.2.3",
+    "fastify": "^5.12.5",
+    "lucide-react": "^0.468.0",
+    "pg": "^8.16.3",
+    "pg-boss": "12.36.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.6",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2",
+    "vitest": "^4.1.11"
+  }
+}

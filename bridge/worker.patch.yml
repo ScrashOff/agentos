@@ -1,0 +1,8 @@
+- id: llm-deepseek
+  config:
+    protocol: chat-completions
+    baseURL: http://127.0.0.1:17820/v1
+    thinking: disabled
+    maxTokens: 8192
+    defaultContextWindow: 128000
+    streamIdleTimeoutMs: 300000

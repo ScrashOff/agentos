@@ -1,0 +1,10 @@
+node_modules
+dist
+.local
+.local-test
+artifacts
+test-results
+playwright-report
+package-lock.json
+docs/ARCHITECTURE.txt
+.env*

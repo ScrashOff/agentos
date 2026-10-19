@@ -1,0 +1,216 @@
+.execution-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  margin-top: 16px;
+}
+.focus-card > .focus-execution {
+  grid-column: 1 / -1;
+  border-top: 1px solid #314865;
+  padding-top: 16px;
+}
+.next-milestone {
+  font-size: 12px;
+  border-left: 2px solid #8ca5c9;
+  padding-left: 12px;
+}
+.next-milestone ul {
+  margin: 6px 0;
+  padding-left: 17px;
+  color: #bccde4;
+}
+.next-milestone p {
+  font-size: 11px;
+}
+.execution-signal {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  background: #132f35;
+  border: 1px solid #2e565d;
+  border-radius: 7px;
+}
+.execution-signal > svg {
+  color: #81d0b9;
+  margin-top: 2px;
+}
+.execution-signal.warning,
+.execution-signal.unknown {
+  background: #302b20;
+  border-color: #71603c;
+}
+.execution-signal.warning > svg,
+.execution-signal.unknown > svg {
+  color: #f3c681;
+}
+.execution-signal strong {
+  font-size: 13px;
+}
+.execution-signal p {
+  font-size: 11px;
+  color: #a9bdd2;
+  margin: 2px 0 0;
+}
+.execution-signal > small {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.execution-numbers {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.6fr;
+  gap: 12px;
+  padding: 14px 0;
+}
+.execution-problem {
+  border: 1px solid #8e6436;
+  border-radius: 6px;
+  background: #30251c;
+  padding: 11px 14px;
+  margin-top: 12px;
+}
+.execution-problem strong {
+  color: #f5ca92;
+  font-size: 12px;
+}
+.execution-problem p {
+  font-size: 11px;
+  margin: 5px 0;
+}
+.execution-outcome {
+  padding: 12px 0;
+}
+.execution-outcome p {
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #c5d4e9;
+}
+.execution-numbers small {
+  display: block;
+  font-size: 10px;
+}
+.execution-numbers strong {
+  display: block;
+  font-size: 15px;
+  margin-top: 4px;
+}
+.execution-numbers p {
+  font-size: 10px;
+  margin-top: 5px;
+  line-height: 1.5;
+  color: #96a9c2;
+}
+.execution-details h4 {
+  font-size: 12px;
+  margin: 0 0 6px;
+  color: #cbd9ed;
+}
+.execution-details h5 {
+  margin: 12px 0 3px;
+  color: #8cabc9;
+  font-weight: 500;
+}
+.execution-details pre {
+  background: #091322;
+  border: 1px solid #263e58;
+  border-radius: 5px;
+  padding: 12px;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 290px;
+  overflow: auto;
+  margin: 8px 0;
+  color: #bed5eb;
+}
+.current-command {
+  border-left: 2px solid #5389b7;
+  padding-left: 12px;
+  margin: 3px 0 18px;
+}
+.current-command > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #9bcef2;
+}
+.current-command > small {
+  display: block;
+  font-size: 10px;
+  margin-top: 4px;
+}
+.compact .current-command pre {
+  max-height: 130px;
+}
+.live-output,
+.work-evidence,
+.execution-machine,
+.action-history {
+  margin-top: 18px;
+}
+.live-output > p,
+.work-evidence > p,
+.action-history > p,
+.execution-machine > p {
+  font-size: 11px;
+  color: #94aac4;
+  margin-bottom: 8px;
+}
+.execution-details details {
+  border: 1px solid #2b415b;
+  background: #111f32;
+  border-radius: 6px;
+  padding: 10px;
+  margin-top: 7px;
+}
+.execution-details summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.execution-details summary small {
+  display: block;
+  font-size: 10px;
+  margin-top: 3px;
+}
+.execution-details summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.changed-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.changed-files > span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: #102034;
+  border: 1px solid #294360;
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+.changed-files code {
+  font-size: 11px;
+}
+.changed-files small {
+  color: #84baab;
+  font-size: 10px;
+}
+@media (max-width: 900px) {
+  .execution-numbers {
+    grid-template-columns: 1fr 1fr;
+  }
+  .execution-numbers > div:last-child {
+    grid-column: 1 / -1;
+  }
+  .execution-signal {
+    flex-wrap: wrap;
+  }
+  .execution-signal > small {
+    margin-left: 28px;
+  }
+}
