@@ -48,6 +48,8 @@ export const proposedTaskSchema = taskSchema
     accountId: z.string().optional(),
     model: z.string().max(150).optional(),
     sourceTask: z.string().optional(),
+    parentKey: z.string().optional(),
+    agentRole: z.enum(['coordinator', 'specialist', 'worker', 'validator']).optional(),
   });
 export const planSchema = z.object({
   title: z.string().min(3).max(200),

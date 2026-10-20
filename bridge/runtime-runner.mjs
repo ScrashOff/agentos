@@ -1,4 +1,5 @@
 import { assertModelRoute } from './model-policy.mjs';
+import os from 'node:os';
 import { createRuntimeGuidanceServer } from './runtime-guidance.mjs';
 import { prepareSandboxLocalhost } from './sandbox-localhost.mjs';
 import { prepareRepairFinalization, finalizeRepairArtifacts, repairFinalizationInstruction } from './repair-finalizer.mjs';
@@ -6,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile, realpath, stat, readdir } from 'node:fs/promises';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { GLM_ACCOUNT, GLM_REQUEST_ADMITTED, withAccountRequestGate } from './gated-generation.mjs';
 import path from 'node:path';
@@ -26,9 +28,22 @@ import {inspectUnitExit} from './unit-exit.mjs';
 import {harnessFailureCode,harnessTurnFailureCode} from './harness-termination.mjs';
 import {projectHarnessToolFailure,rememberHarnessToolCall,forgetHarnessToolCall} from './runtime-tool-failure.mjs';
 
-const DATA = '/var/lib/agentos-bridge/worker-runs';
-const ROOT = '/srv/agentos/workspaces';
-const NODE = '/opt/deepseek-harness/node/bin/node';
+// Path guards across the bridge require canonical roots. Resolve the platform's
+// own symlinks (macOS maps /var to /private/var) once, here, so every guard
+// keeps comparing realpath to the path it was given.
+function canonicalRoot(value) {
+  const target = path.resolve(value);
+  try {
+    mkdirSync(target, { recursive: true, mode: 0o700 });
+    return realpathSync(target);
+  } catch {
+    return target;
+  }
+}
+const DATA_BASE = canonicalRoot(process.env.AGENTOS_BRIDGE_DATA || (existsSync('/var/lib/agentos-bridge') ? '/var/lib/agentos-bridge' : '.local/bridge'));
+const DATA = path.join(DATA_BASE, 'worker-runs');
+const ROOT = canonicalRoot(process.env.AGENTOS_WORKSPACES_ROOT || (existsSync('/srv/agentos/workspaces') ? '/srv/agentos/workspaces' : '.local/workspaces'));
+const NODE = process.env.AGENTOS_NODE_BIN || process.execPath;
 const uuid = /^[0-9a-f-]{36}$/;
 const key = /^[a-z0-9_-]+\/[a-z0-9_-]+$/;
 const digest = (b) => createHash('sha256').update(b).digest('hex');
@@ -53,7 +68,8 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
   try{params=await hydrateArtifactInputBundle(params,signal);}
   catch(e){emit('HARNESS_NOT_STARTED',{confirmed:true,phase:'input_bundle',code:e.code??'INPUT_BUNDLE_INVALID'});throw e;}
   if (params.accountId?.startsWith('agentos:muse:')) {
-    const accounts = JSON.parse(await readFile('/var/lib/agentos-bridge/accounts.json', 'utf8'));
+    const accountsFile = existsSync(path.join(DATA_BASE, 'accounts.json')) ? path.join(DATA_BASE, 'accounts.json') : '/var/lib/agentos-bridge/accounts.json';
+    const accounts = existsSync(accountsFile) ? JSON.parse(await readFile(accountsFile, 'utf8')) : [];
     const account = accounts.find(a => a.id === params.accountId && a.family === 'muse');
     if (!account) throw error('ACCOUNT_MISSING');
     const { museCredential } = await import('./muse-accounts.mjs');
@@ -80,8 +96,14 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
       () => false,
     ));
   // Admission includes host activity outside AgentOS; the slot runner also checks before exec.
-  const mem = await readFile('/proc/meminfo', 'utf8');
-  if (Number(mem.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) < memory.minAvailableKiB) throw error('HOST_CAPACITY');
+  let availableKiB = 0;
+  try {
+    const mem = await readFile('/proc/meminfo', 'utf8');
+    availableKiB = Number(mem.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0);
+  } catch {
+    availableKiB = Math.floor(os.freemem() / 1024);
+  }
+  if (availableKiB < memory.minAvailableKiB) throw error('HOST_CAPACITY');
   await mkdir(DATA, { recursive: true, mode: 0o700 });
   const dir = `${DATA}/${params.runId}`,
     home = `${dir}/home`,

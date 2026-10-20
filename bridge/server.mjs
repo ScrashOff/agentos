@@ -10,6 +10,7 @@ import {
   existsSync,
   chmodSync,
   statSync,
+  realpathSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
@@ -24,19 +25,109 @@ import { museLogin, museSnapshot } from './muse-accounts.mjs';
 import { resolveGenerationAccount } from './generation-account.mjs';
 
 const DSH = '/opt/deepseek-harness/app/node_modules';
-const DATA = process.env.AGENTOS_BRIDGE_DATA || '/var/lib/agentos-bridge';
-mkdirSync(DATA, { recursive: true, mode: 0o700 });
-const yaml = createRequire(DSH + '/@deepseek-ai/dsh-credentials-local/lib/index.js')('yaml');
-const pi = DSH + '/@earendil-works/pi-ai/dist/';
-const { openaiCodexProvider } = await import(pi + 'providers/openai-codex.js');
-const { anthropicProvider } = await import(pi + 'providers/anthropic.js');
-const { kimiCodingProvider } = await import(pi + 'providers/kimi-coding.js');
-const { openAICompletionsApi } = await import(pi + 'api/openai-completions.lazy.js');
-const providers = {
-  codex: openaiCodexProvider(),
-  claude: anthropicProvider(),
-  kimi: kimiCodingProvider(),
-};
+const DATA = (() => {
+  // Canonical root: the path guards downstream compare realpath to this value.
+  const target = path.resolve(process.env.AGENTOS_BRIDGE_DATA || (existsSync('/var/lib/agentos-bridge') ? '/var/lib/agentos-bridge' : '.local/bridge'));
+  mkdirSync(target, { recursive: true, mode: 0o700 });
+  return realpathSync(target);
+})();
+
+let providers = {};
+let openAICompletionsApi = null;
+let yaml = { parse: () => ({}) };
+
+if (existsSync(DSH)) {
+  try {
+    yaml = createRequire(DSH + '/@deepseek-ai/dsh-credentials-local/lib/index.js')('yaml');
+    const pi = DSH + '/@earendil-works/pi-ai/dist/';
+    const { openaiCodexProvider } = await import(pi + 'providers/openai-codex.js');
+    const { anthropicProvider } = await import(pi + 'providers/anthropic.js');
+    const { kimiCodingProvider } = await import(pi + 'providers/kimi-coding.js');
+    const { openAICompletionsApi: oai } = await import(pi + 'api/openai-completions.lazy.js');
+    openAICompletionsApi = oai;
+    providers = {
+      codex: openaiCodexProvider(),
+      claude: anthropicProvider(),
+      kimi: kimiCodingProvider(),
+    };
+  } catch {}
+}
+
+if (!openAICompletionsApi) {
+  openAICompletionsApi = () => ({
+    streamSimple: (model, { systemPrompt, messages, tools }, options) => {
+      const resultPromise = (async () => {
+        // The base URL comes from operator input and carries the credential.
+        const endpoint = new URL(model.baseUrl);
+        if (endpoint.protocol !== 'https:' && !['127.0.0.1', 'localhost', '::1'].includes(endpoint.hostname))
+          throw Object.assign(Error('INSECURE_PROVIDER_URL'), { code: 'INSECURE_PROVIDER_URL' });
+        const url = model.baseUrl.replace(/\/+$/, '') + (model.baseUrl.endsWith('/chat/completions') ? '' : '/chat/completions');
+        const formattedMessages = [];
+        if (systemPrompt) formattedMessages.push({ role: 'system', content: systemPrompt });
+        for (const m of messages) {
+          if (m.role === 'toolResult') {
+            formattedMessages.push({
+              role: 'tool',
+              tool_call_id: m.toolCallId,
+              content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+            });
+          } else {
+            formattedMessages.push(m);
+          }
+        }
+        const body = {
+          model: model.id,
+          messages: formattedMessages,
+          stream: false,
+          max_tokens: options.maxTokens ?? 4096,
+        };
+        if (tools && tools.length > 0) {
+          body.tools = tools.map((t) => ({ type: 'function', function: t }));
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${options.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: options.signal,
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw Object.assign(Error(errText), { status: res.status });
+        }
+        const data = await res.json();
+        const choice = data.choices?.[0];
+        const content = [];
+        if (choice?.message?.content) {
+          content.push({ type: 'text', text: choice.message.content });
+        }
+        if (choice?.message?.tool_calls) {
+          for (const tc of choice.message.tool_calls) {
+            let args = {};
+            try { args = JSON.parse(tc.function.arguments); } catch {}
+            content.push({ type: 'toolCall', id: tc.id, name: tc.function.name, arguments: args });
+          }
+        }
+        return {
+          role: 'assistant',
+          content,
+          stopReason: choice?.finish_reason === 'tool_calls' ? 'toolUse' : 'stop',
+          usage: data.usage ? {
+            input: data.usage.prompt_tokens ?? 0,
+            output: data.usage.completion_tokens ?? 0,
+            totalTokens: data.usage.total_tokens ?? 0,
+          } : null,
+        };
+      })();
+      return {
+        result: () => resultPromise,
+      };
+    },
+  });
+}
+
 const controllers = new Map(),
   attempts = new Map(),
   refreshes = new Map();
@@ -49,11 +140,20 @@ function saveAccount(account) {
   writeFileSync(credentialFile + '.tmp', JSON.stringify(rows), { mode: 0o600 });
   renameSync(credentialFile + '.tmp', credentialFile);
 }
-const settings = () =>
-  yaml.parse(readFileSync('/var/lib/deepseek-harness/.dsh/settings.yaml', 'utf8'))?.['llm-pi-ai']
-    ?.providers ?? {};
-const credentials = () =>
-  yaml.parse(readFileSync('/var/lib/deepseek-harness/.dsh/.credentials.yaml', 'utf8')) ?? {};
+const settings = () => {
+  try {
+    return yaml.parse(readFileSync('/var/lib/deepseek-harness/.dsh/settings.yaml', 'utf8'))?.['llm-pi-ai']?.providers ?? {};
+  } catch {
+    return {};
+  }
+};
+const credentials = () => {
+  try {
+    return yaml.parse(readFileSync('/var/lib/deepseek-harness/.dsh/.credentials.yaml', 'utf8')) ?? {};
+  } catch {
+    return {};
+  }
+};
 function modelSettings(route) {
   const inherited = settings()[route]?.models ?? [];
   const file = DATA + '/provider-models.json';
@@ -119,9 +219,18 @@ async function inheritedState() {
   if (inheritedCache && Date.now() - inheritedAt < 5000) return inheritedCache;
   if (!inheritedPending)
     inheritedPending = (async () => {
-      const response = await fetch('http://127.0.0.1:3084/state', {
-        signal: AbortSignal.timeout(20000),
-      });
+      let response;
+      try {
+        response = await fetch('http://127.0.0.1:3084/state', {
+          signal: AbortSignal.timeout(20000),
+        });
+      } catch (error) {
+        // A refused connection proves no harness is installed here. A timeout
+        // or transport error is uncertainty: reporting zero accounts would
+        // disconnect live accounts that may still exist.
+        if ((error?.cause?.code ?? error?.code) !== 'ECONNREFUSED') throw Error('INHERITANCE_UNAVAILABLE');
+        return { accounts: [], quotas: {} };
+      }
       if (!response.ok) throw Error('INHERITANCE_UNAVAILABLE');
       const result = await response.json();
       inheritedCache = result;

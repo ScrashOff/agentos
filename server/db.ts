@@ -9,7 +9,7 @@ import { installTaskInstructions } from './task-instructions.js';
 import { installRuntimeLookupIndexes } from './runtime-lookup-indexes.js';
 export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
-  max: 15,
+  max: config.pgPoolMax,
   connectionTimeoutMillis: 10000,
 });
 export type DB = Pick<PoolClient, 'query'>;
@@ -47,7 +47,7 @@ export async function migrate() {
     await lock(db);
     await db.query(`
 CREATE TABLE IF NOT EXISTS settings (id text PRIMARY KEY, value jsonb NOT NULL);
-INSERT INTO settings VALUES('capacity','{"maxRuns":4,"browserSlots":2}') ON CONFLICT DO NOTHING;
+INSERT INTO settings VALUES('capacity','{"maxRuns":${config.capacityMaxRuns},"browserSlots":${config.browserSlots}}') ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS agents (
  id text PRIMARY KEY, name text NOT NULL, department text NOT NULL, reports_to text,
  capabilities jsonb NOT NULL, runtime text NOT NULL, version int NOT NULL DEFAULT 1,
@@ -148,8 +148,15 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_revision int;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS stage text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS covers jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allowed_accounts jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_role text;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id uuid REFERENCES runs(id);
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_role text;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
 CREATE TABLE IF NOT EXISTS recall_imports (source_id text PRIMARY KEY, version text NOT NULL, memory_id uuid REFERENCES memories(id), project text NOT NULL);
-INSERT INTO settings VALUES('remote-capacity','{"maxRuns":2,"memoryMiB":3600,"cpuPercent":300}') ON CONFLICT DO NOTHING;
+INSERT INTO settings VALUES('remote-capacity','{"maxRuns":${config.remoteMaxRuns},"memoryMiB":${config.remoteMemoryMiB},"cpuPercent":${config.remoteCpuPercent}}') ON CONFLICT DO NOTHING;
 `);
     await installWorkstreamPolicy(db);
     await installWorkforcePolicy(db);

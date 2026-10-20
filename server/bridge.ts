@@ -24,29 +24,38 @@ export class AccountBridge {
   >();
   connect() {
     if (this.child && !this.child.killed) return this.child;
-    if (!config.bridgeHost)
-      throw new DomainError(
-        'BRIDGE_DISABLED',
-        'A conexão com o servidor de contas não está configurada.',
-      );
-    const child = spawn(
-      'ssh',
-      [
-        '-T',
-        '-o',
-        'BatchMode=yes',
-        '-o',
-        'ConnectTimeout=8',
-        '-o',
-        'ServerAliveInterval=15',
-        '-o',
-        'ServerAliveCountMax=2',
-        config.bridgeHost,
-        (process.env.AGENTOS_GLM_ONLY === '1' ? 'env AGENTOS_GLM_ONLY=1 ' : '') +
-        '/opt/deepseek-harness/node/bin/node ' + bridgeScript('server.mjs'),
-      ],
-      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    const child = config.bridgeHost
+      ? spawn(
+          'ssh',
+          [
+            '-T',
+            '-o',
+            'BatchMode=yes',
+            '-o',
+            'ConnectTimeout=8',
+            '-o',
+            'ServerAliveInterval=15',
+            '-o',
+            'ServerAliveCountMax=2',
+            config.bridgeHost,
+            (process.env.AGENTOS_GLM_ONLY === '1' ? 'env AGENTOS_GLM_ONLY=1 ' : '') +
+            (process.env.AGENTOS_NODE_BIN || '/opt/deepseek-harness/node/bin/node') + ' ' + bridgeScript('server.mjs'),
+          ],
+          { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
+        )
+      : spawn(
+          process.execPath,
+          [bridgeScript('server.mjs')],
+          {
+            windowsHide: true,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              AGENTOS_BRIDGE_DATA: config.bridgeDataDir,
+              AGENTOS_WORKSPACES_ROOT: config.workspacesRoot,
+            },
+          },
+        );
     this.child = child;
     child.stderr.resume();
     child.stdin.on('error', () => {});
