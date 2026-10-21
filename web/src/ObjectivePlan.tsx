@@ -39,6 +39,14 @@ export function ObjectivePlan({ detail }: { detail: Row }) {
       {plan && (
         <>
           <p>{plan.summary}</p>
+          {plan.incremental && (
+            <p className="goal-notice">
+              Entregas incrementais · {plan.incremental.completedRequirementIds.length} de {plan.requirements.length} requisitos verificados em lotes anteriores.
+              {' '}Lote atual: {plan.requirements.find((r: Row) => r.id === plan.incremental.selectedRequirementId)?.description}
+              {' '}Próximo responsável: {run?.state === 'running' || run?.state === 'queued' ? 'planejador' : 'execução e verificação independente'}.
+              {plan.incremental.pendingRequirementIds.length > 0 && ' O próximo lote será preparado automaticamente após o aceite deste; o objetivo permanece aberto.'}
+            </p>
+          )}
           <div className="plan-requirements">
             <strong>O que precisa ser comprovado</strong>
             <ul>
@@ -104,7 +112,7 @@ export function ObjectivePlan({ detail }: { detail: Row }) {
           <summary>Tentativas de planejamento e consumo</summary>
           {detail.planningAttempts.map((a: Row) => (
             <p key={a.planning_run_id + ':' + a.attempt}>
-              Tentativa {a.attempt}: {a.error ?? 'Proposta recebida'} ·{' '}
+              Tentativa {a.attempt}: {a.error ?? (a.has_output ? 'Proposta recebida' : 'Aguardando resultado')} ·{' '}
               {a.usage?.totalTokens ?? '—'} tokens
             </p>
           ))}

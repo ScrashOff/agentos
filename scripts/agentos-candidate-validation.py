@@ -8,7 +8,7 @@ existing, hash-pinned registered validation action.
 import base64, contextlib, hashlib, importlib.util, json, os, pathlib, re, shutil, subprocess, sys, uuid
 sys.dont_write_bytecode = True
 
-REGISTERED_HASH = '8df13ff892b6ceaf0f7cb50e2d718069c5aeb29ac193235a65ace1100607b7d6'
+REGISTERED_HASH = 'e66fcf513aaa513ff2216d87556fb5dba771597dc933ca4b4b38573d8842d5b5'
 REGISTERED = pathlib.Path('/opt/agentos-control/agentos-release-action.py')
 PROFILES = pathlib.Path('/etc/agentos/actions.json')
 STATE = pathlib.Path('/var/lib/agentos-bridge/candidate-validations')
