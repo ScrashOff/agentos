@@ -151,7 +151,10 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allowed_accounts jsonb NOT NULL DEFAU
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_role text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
-ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id uuid REFERENCES runs(id);
+-- A run's parent is its task, not another run: parent_run_id was never written
+-- or read, and an unused column breaks the goalDetail read-model contract that
+-- mirrors this table column for column.
+ALTER TABLE runs DROP COLUMN IF EXISTS parent_run_id;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_role text;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;

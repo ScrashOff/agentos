@@ -23,6 +23,10 @@ import { agyPrintRequest, parseAgyPrintResult } from './agy-print.mjs';
 import { withAccountRequestGate } from './gated-generation.mjs';
 import { museLogin, museSnapshot } from './muse-accounts.mjs';
 import { resolveGenerationAccount } from './generation-account.mjs';
+import { openAICompletionsFallback } from './openai-completions-fallback.mjs';
+import { createGlmRequestGate, DEFAULT_GLM_GATE_SOCKET } from './glm-request-gate.mjs';
+import net from 'node:net';
+import { unlink } from 'node:fs/promises';
 
 const DSH = '/opt/deepseek-harness/app/node_modules';
 const DATA = (() => {
@@ -53,79 +57,28 @@ if (existsSync(DSH)) {
   } catch {}
 }
 
-if (!openAICompletionsApi) {
-  openAICompletionsApi = () => ({
-    streamSimple: (model, { systemPrompt, messages, tools }, options) => {
-      const resultPromise = (async () => {
-        // The base URL comes from operator input and carries the credential.
-        const endpoint = new URL(model.baseUrl);
-        if (endpoint.protocol !== 'https:' && !['127.0.0.1', 'localhost', '::1'].includes(endpoint.hostname))
-          throw Object.assign(Error('INSECURE_PROVIDER_URL'), { code: 'INSECURE_PROVIDER_URL' });
-        const url = model.baseUrl.replace(/\/+$/, '') + (model.baseUrl.endsWith('/chat/completions') ? '' : '/chat/completions');
-        const formattedMessages = [];
-        if (systemPrompt) formattedMessages.push({ role: 'system', content: systemPrompt });
-        for (const m of messages) {
-          if (m.role === 'toolResult') {
-            formattedMessages.push({
-              role: 'tool',
-              tool_call_id: m.toolCallId,
-              content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-            });
-          } else {
-            formattedMessages.push(m);
-          }
-        }
-        const body = {
-          model: model.id,
-          messages: formattedMessages,
-          stream: false,
-          max_tokens: options.maxTokens ?? 4096,
-        };
-        if (tools && tools.length > 0) {
-          body.tools = tools.map((t) => ({ type: 'function', function: t }));
-        }
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${options.apiKey}`,
-          },
-          body: JSON.stringify(body),
-          signal: options.signal,
-        });
-        if (!res.ok) {
-          const errText = await res.text();
-          throw Object.assign(Error(errText), { status: res.status });
-        }
-        const data = await res.json();
-        const choice = data.choices?.[0];
-        const content = [];
-        if (choice?.message?.content) {
-          content.push({ type: 'text', text: choice.message.content });
-        }
-        if (choice?.message?.tool_calls) {
-          for (const tc of choice.message.tool_calls) {
-            let args = {};
-            try { args = JSON.parse(tc.function.arguments); } catch {}
-            content.push({ type: 'toolCall', id: tc.id, name: tc.function.name, arguments: args });
-          }
-        }
-        return {
-          role: 'assistant',
-          content,
-          stopReason: choice?.finish_reason === 'tool_calls' ? 'toolUse' : 'stop',
-          usage: data.usage ? {
-            input: data.usage.prompt_tokens ?? 0,
-            output: data.usage.completion_tokens ?? 0,
-            totalTokens: data.usage.total_tokens ?? 0,
-          } : null,
-        };
-      })();
-      return {
-        result: () => resultPromise,
-      };
-    },
+if (!openAICompletionsApi) openAICompletionsApi = () => openAICompletionsFallback();
+
+// Six simultaneous provider requests are enforced by a gate process. A
+// provisioned host runs it under systemd and this bridge only joins it; a
+// bridge the controller started on this same host owns one, so the limit is
+// real in development instead of silently absent. Never start one next to a
+// provisioned gate that is merely down: that would double the real ceiling.
+if (process.env.AGENTOS_LOCAL_GLM_GATE === '1' && !process.env.AGENTOS_GLM_GATE_SOCKET) {
+  const socketPath = path.join(DATA, 'glm-gate.sock');
+  const listening = existsSync(socketPath) && await new Promise((resolve) => {
+    const probe = net.createConnection(socketPath);
+    probe.once('connect', () => { probe.destroy(); resolve(true); });
+    probe.once('error', () => resolve(false));
   });
+  if (!listening) {
+    if (existsSync(socketPath)) await unlink(socketPath).catch(() => {});
+    const gate = await createGlmRequestGate({ socketPath });
+    process.once('exit', () => { void gate.close(); });
+  }
+  process.env.AGENTOS_GLM_GATE_SOCKET = socketPath;
+} else if (!process.env.AGENTOS_GLM_GATE_SOCKET && existsSync(DEFAULT_GLM_GATE_SOCKET)) {
+  process.env.AGENTOS_GLM_GATE_SOCKET = DEFAULT_GLM_GATE_SOCKET;
 }
 
 const controllers = new Map(),
@@ -379,6 +332,9 @@ function safeError(error) {
     MUSE_LOGIN_START_FAILED: 'Não foi possível iniciar o login do Muse.',
     MUSE_DISCOVERY_FAILED: 'Não foi possível consultar o catálogo do Muse.',
     NATIVE_RUNTIME_ONLY: 'Use esta conta do Muse em uma tarefa com executor nativo.',
+    RUNTIME_NOT_ISOLATED:
+      'Este host não tem bubblewrap e systemd; execução isolada indisponível. Use um host de execução provisionado.',
+    INSECURE_PROVIDER_URL: 'O endpoint da conta precisa ser HTTPS; a credencial não trafega em claro.',
   };
   return {
     code: 'PROVIDER_ERROR',

@@ -45,6 +45,12 @@ const NODE = process.execPath;
 const PROFILE = process.env.AGENTOS_OPENCODE_PROFILE || path.join(DATA_BASE, 'opencode');
 const DEFAULT_ACCOUNT = 'agentos:api:00000000-0000-4000-8000-000000000001';
 const DEFAULT_MODEL = 'glm-5.3-flash';
+// Namespaces, cgroup limits and the read-only mount tree are what makes a
+// worker isolated. Running without them is a different kind of execution, not
+// a degraded one, so it never happens implicitly and is never recorded as
+// isolated.
+const ISOLATION_AVAILABLE = existsSync('/usr/bin/systemd-run') && existsSync('/usr/bin/bwrap');
+const UNSANDBOXED_ALLOWED = process.env.AGENTOS_UNSANDBOXED_RUNTIME === '1';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const workspaceKey = /^[a-z0-9_-]+\/[a-z0-9_-]+$/;
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -103,6 +109,7 @@ async function executeOpenCode(params, signal, emit) {
   const account = accounts.find((item) => item.id === params.accountId || item.id === params.accountId?.replaceAll('-', ':')) ||
     accounts.find((item) => item.id === DEFAULT_ACCOUNT) ||
     accounts[0];
+  if (!ISOLATION_AVAILABLE && !UNSANDBOXED_ALLOWED) throw failure('RUNTIME_NOT_ISOLATED');
   if (!account?.credential?.key) throw failure('ACCOUNT_CONFIGURATION');
   let providerEndpoint;
   try { providerEndpoint = new URL(account.baseUrl); } catch { throw failure('ACCOUNT_CONFIGURATION'); }
@@ -143,6 +150,7 @@ async function executeOpenCode(params, signal, emit) {
     const bytes = JSON.stringify({
       runId: params.runId, workspace: params.workspace, state, at: new Date().toISOString(),
       unit, runtime: 'opencode', model: effectiveModel, requests, toolCalls, usage,
+      isolation: ISOLATION_AVAILABLE ? 'namespace' : 'none',
       deliveryContract: outputContract, providerBackoff: providerWait, ...extra,
     });
     const pending = savePending.then(async () => {
@@ -383,9 +391,7 @@ async function executeOpenCode(params, signal, emit) {
       '--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/browsers', '--setenv', 'LANG', 'C.UTF-8',
       '--', NODE, '/opt/agentos-bridge/opencode-sandbox.mjs',
     ];
-    const hasSystemdRun = existsSync('/usr/bin/systemd-run');
-    const hasBwrap = existsSync('/usr/bin/bwrap');
-    if (hasSystemdRun && hasBwrap) {
+    if (ISOLATION_AVAILABLE) {
       child = spawn('systemd-run', [
         '--quiet', '--wait', '--pipe', '--collect', `--unit=${unit}`, '-p', memory.memoryMax,
         '-p', 'CPUQuota=150%', '-p', 'TasksMax=256', '-p', 'KillMode=control-group',
@@ -393,6 +399,7 @@ async function executeOpenCode(params, signal, emit) {
         params.workspace, memory.slotMemory, '/usr/bin/bwrap', ...mounts,
       ], { stdio: ['ignore', 'pipe', 'pipe'] });
     } else {
+      emit('RUNTIME_NOT_ISOLATED', { confirmed: true, reason: 'sandbox_unavailable', optIn: true });
       child = spawn(NODE, [fileURLToPath(new URL('./opencode-sandbox.mjs', import.meta.url))], {
         cwd: workspace,
         env: {

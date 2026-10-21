@@ -300,3 +300,37 @@ Correções de bloqueio encontradas na revisão desta data:
 - O teste de backoff 429 que vivia em `concurrency-30` definia a própria função
   e verificava a si mesmo. O comportamento real tem cobertura em
   `tests/opencode-provider-error.test.mjs`; o teste tautológico foi removido.
+
+### Decisões sobre os três pontos em aberto (2026-10-21)
+
+**1. Execução sem sandbox — agora é opt-in explícito, nunca implícita.**
+O fallback que rodava o worker sem `bwrap` e sem `systemd-run` quando os
+binários faltavam transformava silenciosamente uma execução isolada em outra
+coisa. `bridge/opencode-executor.mjs` passa a recusar com `RUNTIME_NOT_ISOLATED`
+antes de qualquer efeito colateral, a menos que `AGENTOS_UNSANDBOXED_RUNTIME=1`
+seja definido no host. Quando o opt-in é usado, um evento `RUNTIME_NOT_ISOLATED`
+é emitido e o snapshot imutável do run passa a gravar `isolation: 'none'` — um
+artefato de execução não isolada nunca se parece com um isolado.
+
+**2. Conector OpenAI-compatível — conversão correta e módulo próprio.**
+O fallback embutido em `bridge/server.mjs` empurrava a mensagem interna crua
+para o wire: um turno de assistant com `toolCall` perdia as chamadas de
+ferramenta e um `toolResult` ia como JSON do array de blocos em vez do texto.
+Multi-turn com ferramentas quebrava. A conversão foi extraída para
+`bridge/openai-completions-fallback.mjs`, espelhando as formas que
+`bridge/runtime-gateway.mjs` já converte no sentido inverso, com cobertura em
+`tests/openai-completions-fallback.test.mjs` (sem rede e sem banco).
+A requisição permanece não-streaming de propósito: o chamador só consome
+`result()`, então `stream: false` entrega a mesma mensagem, uso e `stopReason`.
+Limitação conhecida e aceita: `reasoning_content` não é representado por este
+transporte; o caminho do executor opencode, que preserva raciocínio, é outro.
+
+**3. 429 no caminho de geração — backoff real, não um número no ROADMAP.**
+A classificação reusa `classifyProviderError` de `bridge/opencode-provider-error.mjs`
+em vez de uma segunda implementação. Regras: `RATE_LIMIT` e 5xx são repetidos
+até 3 tentativas; `QUOTA_EXCEEDED` e `AUTH_REQUIRED` são estados da conta e não
+gastam outra permissão do gate; um `Retry-After` é obedecido exatamente, nunca
+encurtado; sem header, backoff exponencial com jitter limitado a 15s; e uma
+espera que não cabe no orçamento de 30s é devolvida ao escalonador em vez de
+segurar uma das seis permissões do gate. Nenhum corpo de resposta do provedor
+vira mensagem de erro, evento ou artefato.

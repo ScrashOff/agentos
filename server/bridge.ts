@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
 import { DomainError } from './contracts.js';
-import { bridgeScript } from './bridge-path.js';
+import { bridgeScript, localBridgeScript } from './bridge-path.js';
 
 export class AccountBridge {
   child?: ChildProcessWithoutNullStreams;
@@ -45,7 +45,7 @@ export class AccountBridge {
         )
       : spawn(
           process.execPath,
-          [bridgeScript('server.mjs')],
+          [localBridgeScript('server.mjs')],
           {
             windowsHide: true,
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -53,11 +53,16 @@ export class AccountBridge {
               ...process.env,
               AGENTOS_BRIDGE_DATA: config.bridgeDataDir,
               AGENTOS_WORKSPACES_ROOT: config.workspacesRoot,
+              // A bridge on this host owns its own request gate.
+              AGENTOS_LOCAL_GLM_GATE: '1',
             },
           },
         );
     this.child = child;
-    child.stderr.resume();
+    // A local bridge reports its own startup failures to this operator's log.
+    // A remote one keeps its stderr off this host.
+    if (config.bridgeHost) child.stderr.resume();
+    else child.stderr.pipe(process.stderr);
     child.stdin.on('error', () => {});
     const fail = () => {
       if (this.child === child) this.child = undefined;
