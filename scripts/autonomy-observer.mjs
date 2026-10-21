@@ -28,18 +28,33 @@ try {
   const query = async (sql, values=[]) => (await client.query(sql, values)).rows;
   out.goal = (await query('SELECT id,title,state FROM goals WHERE id=$1',[goal]))[0] ?? null;
   out.tasks = await query('SELECT stage,state,count(*)::int count FROM tasks WHERE goal_id=$1 GROUP BY stage,state',[goal]);
+  out.planning = await query(`SELECT id,state,attempt,started_at,heartbeat_at,error,next_attempt_at
+    FROM planning_runs WHERE objective_id=$1 ORDER BY created_at DESC LIMIT 5`,[goal]);
   out.active = await query(`SELECT r.id,r.task_id,t.title,t.stage,r.model,r.state,r.started_at,r.heartbeat_at
     FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.state IN('queued','running','cancelling','reconciling')
     ORDER BY r.created_at LIMIT 150`);
   out.nonGlmActive = out.active.filter(r=>r.model!=='glm-5.3-flash').length;
+  out.focalActive = await query(`SELECT r.id,r.task_id,t.title,t.stage,r.model,r.state,r.started_at,r.heartbeat_at
+    FROM runs r JOIN tasks t ON t.id=r.task_id WHERE t.goal_id=$1 AND r.state IN('queued','running','cancelling','reconciling')
+    ORDER BY r.created_at LIMIT 150`,[goal]);
   out.acceptances24h = await query(`SELECT t.stage,count(*)::int records,count(DISTINCT a.task_id)::int tasks
     FROM acceptances a JOIN tasks t ON t.id=a.task_id WHERE t.goal_id=$1 AND a.passed
     AND a.created_at>now()-interval '24 hours' GROUP BY t.stage`,[goal]);
   out.finalDeliveries = await query(`SELECT t.id,t.title,r.id run_id,a.created_at accepted_at
     FROM tasks t JOIN LATERAL(SELECT id FROM runs WHERE task_id=t.id ORDER BY attempt DESC LIMIT 1)r ON true
+    LEFT JOIN plan_revisions p ON p.objective_id=t.goal_id AND p.revision=t.plan_revision
     JOIN LATERAL(SELECT passed,created_at FROM acceptances WHERE run_id=r.id ORDER BY created_at DESC LIMIT 1)a ON true
     WHERE t.goal_id=$1 AND t.stage='verify' AND t.state='accepted' AND a.passed
+    AND (p.plan->'incremental' IS NULL OR p.plan->'incremental'->'pendingRequirementIds'='[]'::jsonb)
     AND EXISTS(SELECT 1 FROM artifacts x WHERE x.run_id=r.id AND x.digest ~ '^[a-f0-9]{64}$')
+    ORDER BY a.created_at DESC LIMIT 100`,[goal]);
+  out.verifiedLots = await query(`SELECT t.id,r.id run_id,a.created_at accepted_at,p.revision,
+      p.plan->'incremental'->>'selectedRequirementId' requirement_id
+    FROM tasks t JOIN runs r ON r.task_id=t.id AND r.attempt=t.attempt_count
+    JOIN plan_revisions p ON p.objective_id=t.goal_id AND p.revision=t.plan_revision
+    JOIN LATERAL(SELECT passed,created_at FROM acceptances WHERE run_id=r.id ORDER BY created_at DESC LIMIT 1)a ON true
+    WHERE t.goal_id=$1 AND t.stage='verify' AND t.state='accepted' AND a.passed AND p.plan ? 'incremental'
+    AND EXISTS(SELECT 1 FROM artifacts x WHERE x.run_id=r.id AND x.name='candidate.json' AND x.digest ~ '^[a-f0-9]{64}$')
     ORDER BY a.created_at DESC LIMIT 100`,[goal]);
   out.schema = await query("SELECT id,value->>'state' state FROM settings WHERE id IN('schema:migration-active','schema:backlog-active')");
   out.policy = (await query('SELECT value FROM settings WHERE id=$1',['workforce:'+goal]))[0]?.value ?? null;

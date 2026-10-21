@@ -172,6 +172,10 @@ export async function refreshGoal(db: DB, id: string) {
     state = rows.some((t) => t.state === 'failed' || t.state === 'blocked_failed')
       ? 'failed'
       : 'cancelled';
+  if (state === 'completed') {
+    const latest = (await db.query('SELECT plan FROM plan_revisions WHERE objective_id=$1 ORDER BY revision DESC LIMIT 1',[id])).rows[0]?.plan;
+    if (latest?.incremental?.pendingRequirementIds?.length) state = 'active';
+  }
   const old = (await db.query('SELECT state FROM goals WHERE id=$1', [id])).rows[0];
   if (old.state !== state && old.state !== 'paused') {
     await db.query('UPDATE goals SET state=$2 WHERE id=$1', [id, state]);
@@ -1206,7 +1210,7 @@ export async function goalDetail(id: string) {
     planningAttempts: objective
       ? (
           await pool.query(
-            'SELECT a.attempt,a.error,a.usage,a.created_at,a.planning_run_id FROM planning_attempts a JOIN planning_runs p ON p.id=a.planning_run_id WHERE p.objective_id=$1 ORDER BY a.created_at DESC',
+            'SELECT a.attempt,a.error,a.usage,a.created_at,a.planning_run_id,(a.output IS NOT NULL) has_output FROM planning_attempts a JOIN planning_runs p ON p.id=a.planning_run_id WHERE p.objective_id=$1 ORDER BY a.created_at DESC',
             [id],
           )
         ).rows

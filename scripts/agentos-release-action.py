@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
 """Registered AgentOS action. Candidate checks run as a separate unprivileged user."""
-import os, sys, json, pathlib, hashlib, shutil, subprocess, time, urllib.request, uuid, fcntl
+import os, sys, json, pathlib, hashlib, shutil, subprocess, time, urllib.request, uuid, fcntl, re
+
+def validation_complete(output, require_build=True):
+ text=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',output)
+ if require_build and not re.search(r'\bbuilt in\s+\S+',text):return False
+ for label in ('Test Files','Tests'):
+  lines=re.findall(r'^\s*'+label+r'\s+(.+)$',text,flags=re.MULTILINE)
+  if not lines:return False
+  summary=lines[-1].strip();total=re.search(r'\((\d+)\)\s*$',summary)
+  terms=re.findall(r'(\d+)\s+(passed|skipped|todo)',summary)
+  if not total or not any(kind=='passed' and int(n)>0 for n,kind in terms):return False
+  residue=re.sub(r'\d+\s+(?:passed|skipped|todo)|\(\d+\)|[|\s]','',summary)
+  if residue or sum(int(n) for n,_ in terms)!=int(total.group(1)):return False
+ durations=list(re.finditer(r'^\s*Duration\s+[^\n]+',text,flags=re.MULTILINE))
+ return bool(durations and not text[durations[-1].end():].strip())
 ROOT=pathlib.Path('/opt/agentos')
 STATE=pathlib.Path('/var/lib/agentos/releases')
 NODE='/opt/deepseek-harness/node/bin'
@@ -63,6 +77,7 @@ def main():
   try:checked=run(args,timeout=1800)
   except subprocess.CalledProcessError as e:
    print(json.dumps({'ok':True,'summary':'Validação falhou; consulte o log.','output':{'passed':False},'artifacts':[{'name':'verification.json','content':'{"passed":false}'},{'name':'validation.log','mime':'text/plain','content':e.stdout[-100000:]}]}));return
+  if not validation_complete(checked):raise ValueError('VALIDATION_INCOMPLETE')
   if str((ROOT/'current').resolve())!=validation_base:raise ValueError('BASE_CHANGED_REVALIDATE')
   candidate=ROOT/'releases'/('managed-'+attempt)
   shutil.copytree(build,candidate,ignore=shutil.ignore_patterns('node_modules','.local-test','test-results','playwright-report'))
@@ -95,7 +110,8 @@ def main():
   (STATE/'pending-workers.json').write_text(json.dumps(record))
   print(json.dumps({'ok':True,'summary':'Interface publicada e verificada. Executores ativos preservados; atualização deles aguarda janela sem execuções.','output':record}))
  else:raise ValueError('INVALID_ACTION')
-try:main()
-except Exception as e:
- # No process environment or command arguments in errors.
- print(type(e).__name__+': '+(str(e) if isinstance(e,ValueError) else 'ACTION_FAILED'),file=sys.stderr);sys.exit(1)
+if __name__=='__main__':
+ try:main()
+ except Exception as e:
+  # No process environment or command arguments in errors.
+  print(type(e).__name__+': '+(str(e) if isinstance(e,ValueError) else 'ACTION_FAILED'),file=sys.stderr);sys.exit(1)

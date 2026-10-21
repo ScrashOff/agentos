@@ -6,7 +6,7 @@ import { rankContext } from './context-rank.js';
 import { importRecall } from './recall.js';
 import type { ObjectiveInput } from './objective-contracts.js';
 
-export async function planningContext(request: ObjectiveInput) {
+export async function planningContext(request: ObjectiveInput, compact = false) {
   const recall = await importRecall(request.project, request.message);
   const memories = (
     await pool.query(
@@ -56,7 +56,7 @@ export async function planningContext(request: ObjectiveInput) {
     } catch {
       fallbackReason = 'Laya indisponível/incompleto; seleção lexical aplicada';
     }
-  const selectedMemories = [
+  let selectedMemories = [
     ...required,
     ...shortlist
       .filter((b) => b.type === 'memory' && b.score > 0)
@@ -64,6 +64,17 @@ export async function planningContext(request: ObjectiveInput) {
       .slice(0, 8)
       .map((b) => b.value),
   ];
+  if (compact) {
+    // Keep required decisions complete; omit optional duplicates whole.
+    const seen = new Set(required.map(m => hash(m.content)));
+    let remaining = 4000;
+    selectedMemories = [...required, ...selectedMemories.filter(m => {
+      if (required.includes(m)) return false;
+      const digest = hash(m.content), size = m.content.length + m.title.length;
+      if (seen.has(digest) || size > remaining) return false;
+      seen.add(digest); remaining -= size; return true;
+    })];
+  }
   const selectedAgents = [
     ...new Map(
       [
@@ -99,6 +110,7 @@ export async function planningContext(request: ObjectiveInput) {
       'Decisões obrigatórias excedem a janela do Planner; separar o objetivo.',
     );
   return {
+    strategy: compact ? 'incremental-v1' : 'complete',
     content,
     agents: selectedAgents,
     manifest: {

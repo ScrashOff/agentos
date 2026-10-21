@@ -1,0 +1,55 @@
+AgentOS: incremental delivery, version 1
+
+This controller adapts Ruflo's separation between semantic decisions and
+deterministic action dependencies. It installs no Ruflo runtime, queue or
+additional model. The existing PostgreSQL planner remains the single owner.
+
+Eligible requests: execution mode, one workspace, explicit requirements, and
+planningStrategy=incremental (also the default under the operator's GLM-only
+policy unless planningStrategy=complete). Other requests retain the existing
+complete-plan path. Workforce-owned objectives retain their existing owner;
+this rollout does not transfer a live task graph or run two coordinators.
+
+The model chooses one eligible requirement and returns title, action,
+verification and an existing agent ID. The controller creates work -> verify,
+keeps all original requirements, and records completed and pending coverage.
+An independent final verifier checks ALL requirements on the accumulated
+candidate. A partial lot is never counted as a completed objective.
+
+After a lot is accepted, the existing reconciler checks current runs,
+acceptances, artifact IDs/hashes, leases and the candidate's source. It queues
+the next decision transactionally with a unique trigger. A second dispatcher
+or restart cannot duplicate this handoff. The next lot starts from the verified
+candidate. Rejected QA stays in the existing recovery path and cannot advance
+coverage. Pauses, cancellation, uncertain termination and stale fences remain
+effective. No truncated JSON becomes runnable work.
+
+The compact decision has a 120-second provider deadline and 2200-token response
+envelope. These are per-call bounds, not an objective token budget. Confirmed
+provider timeouts use bounded exponential backoff; uncertain stops do not
+automatically retry. Previously failed initial plans get one durable migration
+to the new contract. Ordinary already-authorized tasks need no new approval.
+
+Required memory decisions remain complete. Optional memories are deduplicated
+and selected as whole entries within 4000 characters. The model never receives
+the complete prior DAG/history just to select the next lot.
+
+Telemetry retains every planning attempt, including timeouts; the UI identifies
+incremental coverage. The independent observer distinguishes verified lots
+from final deliveries and separates goal activity from global activity.
+External qualification criteria and scoring are unchanged. Controller tests
+and operator-assisted bootstrap are not autonomous delivery evidence.
+
+Backup protection: check available capacity before starting; write temporary
+files with .partial suffix, remove failed partial output, and preserve previous
+completed backups. A refused backup means storage still needs attention; it
+must not consume the application's remaining disk space.
+
+Reference examined (ideas only; no source copied):
+https://github.com/ruvnet/ruflo/tree/588ef6b36e95b953bc74d4536dc6a57b6351ea71
+plugins/ruflo-console/hooks/goap.ts
+plugins/ruflo-console/hooks/data/ap-loop.ts
+
+Not implemented in this slice: automatic tuning trials/rollback, parallel
+incremental lots, multi-workspace incremental integration, and external
+qualification of long-running autonomy. These require their own evidence.

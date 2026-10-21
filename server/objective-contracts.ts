@@ -23,6 +23,7 @@ export const objectiveSchema = z
     allowedAccounts: z.array(z.string()).max(30).default([]),
     idempotencyKey: z.string().min(8).max(160),
     chatId: z.uuid().optional(),
+    planningStrategy: z.enum(['complete', 'incremental']).optional(),
   })
   .refine((r) => r.workspaces.every((w) => w.split('/')[0] === r.project), {
     message: 'Os workspaces devem pertencer ao projeto do objetivo.',
@@ -66,6 +67,12 @@ export const planSchema = z.object({
   assumptions: z.array(z.string().max(2000)).max(20).default([]),
   approachChange: z.string().max(5000).default(''),
   tasks: z.array(proposedTaskSchema).min(1).max(80),
+  incremental: z.object({
+    version: z.literal(1),
+    selectedRequirementId: z.string(),
+    completedRequirementIds: z.array(z.string()).max(30),
+    pendingRequirementIds: z.array(z.string()).max(30),
+  }).strict().optional(),
 });
 export type ProposedPlan = z.infer<typeof planSchema>;
 
@@ -175,7 +182,20 @@ export function validatePlan(
     for (const v of finals) finalValidators.add(v.key);
     if (!finals.length) fail('Falta validação final da candidata integrada.');
   }
-  for (const req of plan.requirements)
+  const incremental = plan.incremental;
+  if (incremental) {
+    const partition = [...incremental.completedRequirementIds, incremental.selectedRequirementId, ...incremental.pendingRequirementIds];
+    if (request.mode !== 'execute' || request.workspaces.length !== 1 ||
+        partition.length !== plan.requirements.length || new Set(partition).size !== partition.length ||
+        partition.some(id => !plan.requirements.some(r => r.id === id)))
+      fail('Partição incremental inválida ou escopo não suportado.');
+    if (plan.tasks.some(t => t.stage !== 'verify' && t.covers.some(id => id !== incremental.selectedRequirementId)))
+      fail('O lote deve implementar somente seu requisito selecionado.');
+  }
+  const requiredNow = incremental?.pendingRequirementIds.length
+    ? plan.requirements.filter(r => r.id === incremental.selectedRequirementId)
+    : plan.requirements;
+  for (const req of requiredNow)
     if (!plan.tasks.some((t) => finalValidators.has(t.key) && t.covers.includes(req.id)))
       fail('Requisito sem validação final: ' + req.id);
 }

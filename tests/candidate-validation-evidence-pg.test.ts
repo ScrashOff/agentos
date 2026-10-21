@@ -272,7 +272,7 @@ async function completeValidation() {
       contractDigest: completed.request.contractDigest,
     },
     outcome: { passed: true, code: 'VALIDATION_PASSED', state: 'completed' },
-    registeredActionSha: '8df13ff892b6ceaf0f7cb50e2d718069c5aeb29ac193235a65ace1100607b7d6',
+    registeredActionSha: 'e66fcf513aaa513ff2216d87556fb5dba771597dc933ca4b4b38573d8842d5b5',
     registeredCommand: [
       '/usr/bin/python3',
       '/opt/agentos-control/agentos-release-action.py',
