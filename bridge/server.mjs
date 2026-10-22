@@ -336,11 +336,20 @@ function safeError(error) {
       'Este host não tem bubblewrap e systemd; execução isolada indisponível. Use um host de execução provisionado.',
     INSECURE_PROVIDER_URL: 'O endpoint da conta precisa ser HTTPS; a credencial não trafega em claro.',
   };
+  // A typed provider failure carries its own code and HTTP status. Flattening
+  // every one of them into the same sentence hides which one actually happened.
+  const typed = /^[A-Z_]{4,40}$/.test(error?.code ?? '') ? error.code : null;
+  // Structural transport diagnosis only: the error class and the socket-level
+  // cause. Never the upstream body, URL or message text.
+  const transport = typed
+    ? null
+    : [error?.name, error?.cause?.code].filter((v) => /^[A-Za-z_]{3,40}$/.test(v ?? '')).join(' ');
   return {
     code: 'PROVIDER_ERROR',
     message:
       known[text] ??
-      'O provedor não concluiu a solicitação. Confira a conta e o modelo selecionados.',
+      'O provedor não concluiu a solicitação. Confira a conta e o modelo selecionados.' +
+        (typed ? ` [${typed}${Number.isInteger(error?.status) ? ' ' + error.status : ''}]` : transport ? ` [${transport}]` : ''),
   };
 }
 async function getCredential(account, signal) {

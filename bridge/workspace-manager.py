@@ -67,7 +67,7 @@ def copy_reservation(source):
         dirs[:]=[d for d in dirs if d not in excluded]
         for name in files:
             if name in excluded: continue
-            p=pathlib.Path(folder)/name;info=p.stat(follow_symlinks=False)
+            p=pathlib.Path(folder)/name;info=p.lstat()
             if not stat.S_ISREG(info.st_mode): raise ValueError('SOURCE_NOT_REGULAR')
             amount=max(4096,info.st_size);copied+=amount
             if 'assets' not in p.relative_to(source).parts and not name.endswith('.log'): baseline+=amount

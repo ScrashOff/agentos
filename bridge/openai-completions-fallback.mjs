@@ -175,6 +175,9 @@ export function openAICompletionsFallback({ fetch: fetchImpl = fetch, random = M
           model: model.id,
           messages: toCompletionsMessages(systemPrompt, messages),
           stream: true,
+          // Without this a streamed call reports no usage at all, leaving the
+          // run with no token accounting and no way to detect truncation.
+          stream_options: { include_usage: true },
           max_tokens: options.maxTokens ?? model.maxTokens ?? 4096,
           ...(tools?.length ? { tools: tools.map((t) => ({ type: 'function', function: t })) } : {}),
         };
