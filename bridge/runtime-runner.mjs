@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { toGeneration, completion } from './runtime-gateway.mjs';
+import { bufferedModelChannel, WORKER_MODEL_TIMEOUT_MS } from './runtime-model-channel.mjs';
 import { workspaceOperation } from './workspaces.mjs';
 import { materializeSourceInputs } from './source-inputs.mjs';
 import {hydrateArtifactInputBundle,referencedInputLimitBytes} from './artifact-input-bundle.mjs';
@@ -157,13 +158,10 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     if(handoff && handoff.digest!==handoffDigest){handoffDigest=handoff.digest;emit('RUNTIME_HANDOFF',handoff);}
   };
   const gateway = createServer(async (req, res) => {
-    const controller = new AbortController();
+    const channel = bufferedModelChannel(res, signal);
     // GLM waits for a host-wide permit before its provider timeout starts.
     const gatedRequest = params.accountId === GLM_ACCOUNT;
-    const requestTimeout = gatedRequest ? null : AbortSignal.timeout(300000);
-    const abort = () => controller.abort();
-    signal.addEventListener('abort', abort, { once: true });
-    res.on('close', abort);
+    const requestTimeout = gatedRequest ? null : AbortSignal.timeout(WORKER_MODEL_TIMEOUT_MS);
     try {
       if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
         res.writeHead(404);
@@ -175,6 +173,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         body += chunk;
         if (body.length > 1500000) throw error('CONTEXT_TOO_LARGE');
       }
+      channel.start();
       if(progressProbeDue&&uuid.test(params.runFence??'')) {
         progressProbeDue=false;
         const proof=await inspectRuntimeProgress(params.runId,params.workspace);
@@ -211,8 +210,8 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
       // runtime while retaining its original ungated generate callback. Newer
       // bridges recognize the private symbol and do not acquire twice.
       const result = await withAccountRequestGate(
-        gatedRequest ? { ...input, runId: params.runId, requestTimeoutMs: 300000 } : input,
-        requestTimeout ? AbortSignal.any([controller.signal, requestTimeout]) : controller.signal,
+        gatedRequest ? { ...input, runId: params.runId, requestTimeoutMs: WORKER_MODEL_TIMEOUT_MS } : input,
+        requestTimeout ? AbortSignal.any([channel.signal, requestTimeout]) : channel.signal,
         (requestSignal) => generate(input, requestSignal, GLM_REQUEST_ADMITTED),
         emit,
       );
@@ -223,26 +222,15 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         stopReason: result.message.stopReason,
         tokens: result.message.usage?.totalTokens ?? null,
       });
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      for (const frame of completion(result.message, params.model))
-        res.write('data: ' + JSON.stringify(frame) + '\n\n');
-      res.end('data: [DONE]\n\n');
+      channel.finish(completion(result.message, params.model));
     } catch (e) {
-      gatewayError =
-        (requestTimeout?.aborted || e.name === 'TimeoutError') && !controller.signal.aborted
-          ? 'MODEL_TIMEOUT'
-          : /quota|429|rate.limit/i.test(e.message)
-            ? 'QUOTA_EXCEEDED'
-            : /auth|credential|401|403/i.test(e.message)
-              ? 'AUTH_REQUIRED'
-              : (e.code ?? 'MODEL_REQUEST_FAILED');
+      gatewayError = channel.failureCode(requestTimeout?.aborted ? requestTimeout.reason : e);
       emit('MODEL_ERROR', { code: gatewayError });
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: gatewayError, type: 'agentos_gateway' } }));
+      channel.fail(gatewayError);
       // A broken provider call must not leave an apparently running, idle agent loop.
       fail(error(gatewayError));
     } finally {
-      signal.removeEventListener('abort', abort);
+      channel.dispose();
     }
   });
   await new Promise((resolve, reject) => {
