@@ -49,6 +49,8 @@ export const proposedTaskSchema = taskSchema
     accountId: z.string().optional(),
     model: z.string().max(150).optional(),
     sourceTask: z.string().optional(),
+    parentKey: z.string().optional(),
+    agentRole: z.enum(['coordinator', 'specialist', 'worker', 'validator']).optional(),
   });
 export const planSchema = z.object({
   title: z.string().min(3).max(200),
@@ -82,8 +84,8 @@ export function validatePlan(
   previousRequirements?: any[],
 ) {
   const byKey = new Map(plan.tasks.map((t) => [t.key, t]));
-  const fail = (message: string): never => {
-    throw new DomainError('PLAN_INVALID', message, 400);
+  const fail = (message: string, detail?: Record<string, unknown>): never => {
+    throw Object.assign(new DomainError('PLAN_INVALID', message, 400), { detail });
   };
   if (byKey.size !== plan.tasks.length) fail('Chaves de tarefas duplicadas.');
   if (new Set(plan.requirements.map((r) => r.id)).size !== plan.requirements.length)
@@ -111,6 +113,18 @@ export function validatePlan(
     return all;
   }
   const ancestry = new Map(plan.tasks.map((t) => [t.key, ancestors(t.key)]));
+  // Delegation is distinct from dependency order, but must also be a forest.
+  for (const task of plan.tasks) {
+    const seen = new Set([task.key]);
+    let parent = task.parentKey;
+    while (parent) {
+      if (seen.has(parent)) fail('Hierarquia de delegação circular.');
+      seen.add(parent);
+      const node = byKey.get(parent);
+      if (!node) fail('Pai de delegação inexistente: '+parent);
+      parent = node!.parentKey;
+    }
+  }
   for (const t of plan.tasks) {
     if (/^base-\d+$/.test(t.key)) fail('Chave de tarefa reservada para o snapshot da base.');
     if (!request.workspaces.includes(t.baseWorkspace))
@@ -138,16 +152,15 @@ export function validatePlan(
         byKey.get(t.sourceTask)?.baseWorkspace !== t.baseWorkspace)
     )
       fail('A origem da candidata precisa ser uma dependência do mesmo workspace.');
-    if (
-      t.writePaths.some(
-        (p) =>
-          p.startsWith('/') ||
-          p.includes('..') ||
-          p.includes('\\') ||
-          /(^|\/)(\.git|node_modules|assets)(\/|$)/.test(p),
-      )
-    )
-      fail('Escopo de escrita inválido.');
+    const refusedPath = t.writePaths.find(
+      (p) =>
+        p.startsWith('/') ||
+        p.includes('..') ||
+        p.includes('\\') ||
+        /(^|\/)(\.git|node_modules|assets)(\/|$)/.test(p),
+    );
+    if (refusedPath !== undefined)
+      fail('Escopo de escrita inválido.', { task: t.key, writePath: refusedPath });
     if (t.stage === 'integrate' && t.sourceTask)
       fail('Integração deve partir da base comum e aplicar os patches.');
     if (

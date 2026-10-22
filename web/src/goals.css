@@ -775,3 +775,33 @@
   display: block;
   margin-top: 8px;
 }
+
+/* Live signal while a plan is being generated: the pulse marks production,
+   the heartbeat line marks liveness. They are different claims. */
+.planning-activity {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-left: 3px solid #4fc3f7;
+  border-radius: 6px;
+  background: #0d1c2d;
+}
+.planning-activity p {
+  margin: 4px 0;
+}
+.planning-activity strong::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #4fc3f7;
+  animation: planning-pulse 1.6s ease-in-out infinite;
+}
+@keyframes planning-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .planning-activity strong::before { animation: none; }
+}

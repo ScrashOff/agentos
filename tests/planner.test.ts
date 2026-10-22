@@ -381,12 +381,18 @@ it('recovers a confirmed generation timeout without creating duplicate work', as
 });
 
 it.each([
-  ['generate', 'STOP_UNCONFIRMED', 1],
-  ['worker.prepare', 'PROVIDER_TIMEOUT', 1],
-  ['generate', 'PROVIDER_TIMEOUT', 3],
-])('does not replay %s after %s at attempt %s', async (phase, code, attempt) => {
+  ['generate', 'STOP_UNCONFIRMED', 1, 'failed', false],
+  ['worker.prepare', 'PROVIDER_TIMEOUT', 1, 'failed', false],
+  ['generate', 'PROVIDER_TIMEOUT', 3, 'queued', false],
+  ['generate', 'STOP_UNCONFIRMED', 1, 'failed', true],
+  ['worker.prepare', 'STOP_UNCONFIRMED', 1, 'failed', true],
+])('distinguishes confirmed model failure from uncertain effects: %s %s attempt %s -> %s', async (phase, code, attempt, expectedState, interrupt) => {
+  const controller = new AbortController();
   vi.spyOn(accountBridge, 'request').mockImplementation(async (method) => {
-    if (method === phase) throw Object.assign(Error(code), { code });
+    if (method === phase) {
+      if (interrupt) controller.abort();
+      throw Object.assign(Error(code), { code });
+    }
     if (method === 'memory.search') return { items: [] };
     if (method === 'worker.workspaces') return [{ id: 'test/base' }];
     if (method === 'generate') return { message: { content: [{ type: 'text', text: JSON.stringify(plan()) }] } };
@@ -396,8 +402,8 @@ it.each([
   await submitObjective(request());
   const run = await claimPlanning();
   run.attempt = attempt;
-  await new PlanningEngine().execute(run, new AbortController().signal);
-  expect((await pool.query('SELECT state FROM planning_runs')).rows[0].state).toBe('failed');
+  await new PlanningEngine().execute(run, controller.signal);
+  expect((await pool.query('SELECT state FROM planning_runs')).rows[0].state).toBe(expectedState);
   expect((await pool.query('SELECT * FROM tasks')).rowCount).toBe(0);
 });
 

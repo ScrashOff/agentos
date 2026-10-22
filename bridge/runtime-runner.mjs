@@ -20,6 +20,7 @@ import { preserveRuntimeArtifactClaims, runtimeArtifactInstruction } from './run
 import { deliveryContract, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstruction } from './delivery-manifest.mjs';
 import {analyzePollTrace} from './runtime-progress.mjs';
 import {inspectRuntimeProgress,checkpointRuntimeProgress} from './inspect-runtime-progress.mjs';
+import {captureRuntimeHandoff,runtimeHandoffInstruction} from './runtime-handoff.mjs';
 import {harnessMemory} from './runtime-memory.mjs';
 import {stopUnit} from './process-stop.mjs';
 import {inspectUnitExit} from './unit-exit.mjs';
@@ -148,6 +149,13 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
   // happens at the next generation boundary, while no new tool can be issued.
   const progressRows=[];
   let progressSequence=0,progressProbeDue=false,progressCheckpoint=null;
+  let handoffAt=0,handoffDigest=null;
+  const checkpointHandoff=async()=>{
+    if (!params.managed || !params.runFence) return;
+    handoffAt=Date.now();
+    const handoff=await captureRuntimeHandoff(params);
+    if(handoff && handoff.digest!==handoffDigest){handoffDigest=handoff.digest;emit('RUNTIME_HANDOFF',handoff);}
+  };
   const gateway = createServer(async (req, res) => {
     const controller = new AbortController();
     // GLM waits for a host-wide permit before its provider timeout starts.
@@ -186,10 +194,11 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
           }
         }
       }
+      if(Date.now()-handoffAt>60000)await checkpointHandoff();
       const input = toGeneration(JSON.parse(body), {
         accountId: params.accountId,
         model: params.model,
-        reasoning: 'high',
+        reasoning: params.model === 'glm-5.3-flash' ? 'low' : 'high',
       });
       requests++;
       emit('MODEL_REQUEST', {
@@ -531,7 +540,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     const prompt = `${params.prompt}${roleClosure}${sourceInputs.instruction}\n\nContext manifest and shared memory: /home/agent/context.json\nInputs: /home/agent/inputs/\nRoutine code errors, failing tests and missing references that can be fixed in this workspace are implementation work, not external blockers. When assigned implementation, edit and test until the scoped task is done; do not return only a diagnosis of a fixable error. Do not expand scope or claim success without evidence. Output: respond with JSON {"summary":"...","artifacts":[{"name":"report.json","path":"evidence/report.json","mime":"application/json"}]}. Artifacts must be real files under this workspace, not claimed executions. Return a limitation only for an actual unmet external dependency or unresolved verified defect. Never claim independent acceptance.`;
     const receipt = await rpc('session/prompt', {
       sessionId: params.runId,
-      contentBlocks: [{ type: 'text', text: prompt + runtimeArtifactInstruction + deliveryManifestInstruction + (repairSnapshot ? repairFinalizationInstruction : '') }],
+      contentBlocks: [{ type: 'text', text: prompt + runtimeHandoffInstruction + runtimeArtifactInstruction + deliveryManifestInstruction + (repairSnapshot ? repairFinalizationInstruction : '') }],
     });
     receiptId = receipt.messageId;
     if (guidanceIdentity) {
@@ -600,6 +609,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     };
   } catch (e) {
     await stop();
+    await checkpointHandoff();
     const termination = await inspectUnitExit(unit);
     if (termination) emit('RUNTIME_TERMINATION', {...termination,workspace:params.workspace,
       ...(params.runFence ? {runFence:params.runFence} : {})});

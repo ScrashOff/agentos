@@ -46,6 +46,7 @@ import './chat.css';
 import { SimpleChat, ConnectionsPanel, ConnectAccountDialog } from './Chat';
 import { Cycles } from './Cycles';
 import { GoalDirectory, GoalOverview, TaskInspection } from './GoalProgress';
+import { ExecutionTreeView } from './ExecutionTreeView';
 import { retainExecutionEvents } from './task-attention';
 type Row = Record<string, any>;
 type State = {
@@ -1779,6 +1780,7 @@ function GoalDetail({
       <div className="tabs">
         {[
           ['overview', 'Visão geral'],
+          ['tree', 'Árvore de execução'],
           ['plan', 'Plano'],
           ['runs', 'Execuções'],
           ['artifacts', 'Artefatos'],
@@ -1793,6 +1795,7 @@ function GoalDetail({
       {tab === 'overview' && (
         <GoalOverview detail={detail} data={data} inspect={setSelectedTaskId} />
       )}
+      {tab === 'tree' && <ExecutionTreeView detail={detail} data={data} inspect={setSelectedTaskId} />}
       {tab === 'plan' && (
         <>
           <Panel title="Plano de execução" subtitle="As dependências são liberadas após aceite">

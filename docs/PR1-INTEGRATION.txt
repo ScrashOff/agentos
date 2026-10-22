@@ -1,0 +1,29 @@
+Selective integration of AgentOS PR #1
+
+Reference: https://github.com/lucasaugustodev/agentos/pull/1
+Contributor fork: https://github.com/ScrashOff/agentos
+Reviewed head: 8617f8280410f74232ce1542efc8c967f668e8ad
+
+The execution tree, hierarchy metadata, planning progress display, initial
+OpenAI-compatible transport and concurrency examples derive from that MIT-
+licensed contribution. Existing project license notices remain applicable.
+
+Integration is selective. It does not import the proposed capacity defaults,
+unknown-policy permissiveness, unsandboxed runtime fallback or broad account
+fallback. Our installation retains its explicit GLM-only policy and six
+simultaneous model-request limit.
+
+Transport validation rejects incomplete streams, output-limit terminations and
+invalid tool arguments before any tool can be dispatched. Retries are bounded
+and preserve provider retry timing. GLM interleaved thinking is retained between
+tool calls; progress events expose counters only. Planner retry counters separate
+transport failures from invalid plans. Unconfirmed physical execution never
+becomes safe to retry merely because its observation is old.
+
+Worker handoffs are bounded, fenced and explicitly unverified recovery inputs.
+They do not establish acceptance. Published artifacts, independent verification
+and objective criteria remain the source of delivery progress.
+
+The execution tree uses explicit parent relationships, never dependency edges
+as inferred hierarchy. Counts describe current tasks and registered usage,
+not nominal agent capacity or final objective completion.

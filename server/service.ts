@@ -211,6 +211,7 @@ export async function readScheduleCandidates(db:DB=pool,service?:'agentos-openco
     ), candidates AS MATERIALIZED (
     SELECT t.id,t.goal_id,t.state,t.reason,t.stage,t.next_attempt_at,t.priority,t.created_at,t.key,
       t.account_id,t.allowed_accounts,t.model,t.resources,t.attempt_count,t.instruction_revision_id,
+      t.parent_task_id,t.agent_role,t.agent_level,
       CASE WHEN t.execution IS NULL THEN NULL ELSE jsonb_build_object(
         'kind',t.execution->>'kind','workforceLane',t.execution->>'workforceLane',
         'supervisedAdmission',t.execution->'supervisedAdmission') END execution,
@@ -526,9 +527,9 @@ export async function schedule(service?:'agentos-opencode',inspect=inspectPrepar
         fence = randomUUID();
       if(prepared)await consumeNativeAdmission(db,prepared,id);
       await db.query(
-        'INSERT INTO runs(id,task_id,attempt,fence,account_id,runtime,agent_version,checkpoint) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+        'INSERT INTO runs(id,task_id,attempt,fence,account_id,runtime,agent_version,checkpoint,parent_task_id,agent_role,agent_level) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
         [id, t.id, t.attempt_count + 1, fence, account.id, prepared?'opencode':t.runtime, prepared?.receipt.route.agentVersion??t.agent_version,
-          prepared?JSON.stringify(prepared.checkpoint):null],
+          prepared?JSON.stringify(prepared.checkpoint):null,t.parent_task_id??null,t.agent_role??null,t.agent_level??0],
       );
       if(!prepared)await db.query(
         'UPDATE runs SET checkpoint=(SELECT checkpoint FROM runs WHERE task_id=$2 AND id<>$1 AND checkpoint IS NOT NULL ORDER BY attempt DESC LIMIT 1) WHERE id=$1',
@@ -1158,6 +1159,7 @@ export async function goalDetail(id: string) {
   const runs = (
     await pool.query(
       `SELECT r.id,r.task_id,r.attempt,r.state,r.worker_id,r.account_id,r.runtime,r.agent_version,
+       r.parent_task_id,r.agent_role,r.agent_level,
        r.created_at,r.started_at,r.finished_at,r.heartbeat_at,r.context_id,r.summary,r.error_code,r.usage,r.checkpoint,r.model,
        r.instruction_snapshot->'task'->'criteria' accepted_criteria
        FROM runs r JOIN tasks t ON t.id=r.task_id WHERE t.goal_id=$1 ORDER BY r.created_at DESC`,

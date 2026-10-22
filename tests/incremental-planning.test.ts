@@ -103,7 +103,7 @@ it('recovers a confirmed timeout with the small contract and reuses persisted ou
     if(method==='memory.search')return {items:[]};
     if(method==='worker.workspaces')return [{id:'test/base'}];
     if(method==='generate'){
-      expect(p.maxOutputTokens).toBe(2200);expect(JSON.parse(p.messages[0].content)).not.toHaveProperty('previousPlan');
+      expect(p.maxOutputTokens).toBe(8192);expect(JSON.parse(p.messages[0].content)).not.toHaveProperty('previousPlan');
       if(++generated===1)throw Object.assign(Error('confirmed'),{code:'PROVIDER_TIMEOUT'});
       return {message:{content:[{type:'text',text:JSON.stringify(decision())}]}};
     }
@@ -130,4 +130,40 @@ it('does not dispatch a truncated JSON fragment or retry an uncertain terminatio
 it('honors paused goals between lots',async()=>{
   const {objectiveId}=await start();await acceptBatch(objectiveId,1);await pool.query("UPDATE goals SET state='paused' WHERE id=$1",[objectiveId]);
   await reconcilePlanning();expect(await claimPlanning()).toBeNull();
+});
+
+it('repairs the first invalid agent after nineteen transport failures without consuming semantic retries',async()=>{
+  let generated=0;
+  vi.spyOn(accountBridge,'request').mockImplementation(async(method,p:any)=>{
+    if(method==='memory.search')return {items:[]};if(method==='worker.workspaces')return [{id:'test/base'}];
+    if(method==='worker.prepare')return {};
+    if(method==='generate'){
+      const schema=JSON.parse(p.messages[0].content).schema;
+      expect(schema.properties.agentId.enum).toContain('engineering.backend.node');
+      expect(schema.properties.agentId.enum).not.toContain('engineering.backend.nodejs');
+      return {message:{content:[{type:'text',text:JSON.stringify({...decision(),agentId:++generated===1?'engineering.backend.nodejs':'engineering.backend.node'})}]}};
+    }
+    throw Error('ranking fallback');
+  });
+  await submitObjective(request());
+  await pool.query(`UPDATE planning_runs SET attempt=19,recovery_counts='{"transient":19}'`);
+  const engine=new PlanningEngine();await engine.execute(await claimPlanning(),new AbortController().signal);
+  const repaired=(await pool.query('SELECT * FROM planning_runs')).rows[0];
+  expect(repaired.state).toBe('queued');expect(repaired.recovery_counts).toEqual({transient:19,invalid_plan:1});
+  await pool.query('UPDATE planning_runs SET next_attempt_at=now()');
+  await engine.execute(await claimPlanning(),new AbortController().signal);
+  expect((await pool.query('SELECT count(*) FROM tasks')).rows[0].count).toBe('2');
+});
+
+it('persists a child before its parent atomically and rejects cyclic or absent parents',async()=>{
+  const input=request();await submitObjective(input);const run=await claimPlanning();
+  const plan=compileDelivery(decision(),input);plan.tasks[0].parentKey='verify';
+  const agents=(await pool.query('SELECT * FROM agents')).rows;
+  const missing=structuredClone(plan);missing.tasks[0].parentKey='unknown';
+  expect(()=>validatePlan(missing,input,agents,[])).toThrow();
+  const cyclic=structuredClone(plan);cyclic.tasks[1].parentKey='deliver';
+  expect(()=>validatePlan(cyclic,input,agents,[])).toThrow();
+  await applyPlannedResult(run,plan);
+  const rows=(await pool.query('SELECT id,key,parent_task_id FROM tasks')).rows;
+  expect(rows.find(t=>t.key.endsWith('-deliver')).parent_task_id).toBe(rows.find(t=>t.key.endsWith('-verify')).id);
 });

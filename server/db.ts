@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS planning_runs (
  UNIQUE(objective_id,trigger_key));
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_planning ON planning_runs(objective_id) WHERE state IN('queued','running','waiting_quota');
 ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS usage JSONB;
+ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS progress JSONB;
+ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS recovery_counts JSONB NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS planning_attempts (
  planning_run_id uuid NOT NULL REFERENCES planning_runs(id), attempt int NOT NULL,
  output text, usage jsonb, error text, created_at timestamptz NOT NULL DEFAULT now(),
@@ -148,6 +150,12 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_revision int;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS stage text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS covers jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allowed_accounts jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_role text;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_role text;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
 CREATE TABLE IF NOT EXISTS recall_imports (source_id text PRIMARY KEY, version text NOT NULL, memory_id uuid REFERENCES memories(id), project text NOT NULL);
 INSERT INTO settings VALUES('remote-capacity','{"maxRuns":2,"memoryMiB":3600,"cpuPercent":300}') ON CONFLICT DO NOTHING;
 `);

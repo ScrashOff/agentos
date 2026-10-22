@@ -22,6 +22,7 @@ import { agyPrintRequest, parseAgyPrintResult } from './agy-print.mjs';
 import { withAccountRequestGate } from './gated-generation.mjs';
 import { museLogin, museSnapshot } from './muse-accounts.mjs';
 import { resolveGenerationAccount } from './generation-account.mjs';
+import { openAICompletionsFallback } from './openai-completions-fallback.mjs';
 
 const DSH = '/opt/deepseek-harness/app/node_modules';
 const DATA = process.env.AGENTOS_BRIDGE_DATA || '/var/lib/agentos-bridge';
@@ -221,6 +222,9 @@ function safeError(error) {
       'MODEL_POLICY_UNAVAILABLE',
       'MODEL_POLICY_INVALID',
       'MODEL_REQUEST_FAILED',
+      'RATE_LIMIT',
+      'AUTH_REQUIRED',
+      'QUOTA_EXCEEDED',
       'MODEL_TIMEOUT',
       'CONTEXT_TOO_LARGE',
       'GLM_GATE_UNAVAILABLE',
@@ -389,6 +393,10 @@ async function generate(params, signal, emit, admission) {
     };
     auth = { apiKey: credential.key };
     provider = { streamSimple: (m, c, o) => openAICompletionsApi().streamSimple(m, c, o) };
+    // Use the inspected transport on the verified GLM route, even when the
+    // optional SDK is installed. Other providers retain their existing path.
+    if (glmModelProfile(account.id,params.model).reasoning)
+      provider = openAICompletionsFallback();
   }
   return withAccountRequestGate(
     params,
@@ -403,6 +411,9 @@ async function generate(params, signal, emit, admission) {
           reasoning: params.reasoning ?? 'low',
           transport: 'sse',
           maxTokens: params.maxOutputTokens ?? 4096,
+          onProgress: progress => emit('MODEL_STREAM_PROGRESS',progress),
+          onRetry: retry => emit('MODEL_REQUEST_RETRY',retry),
+          onFailure: failure => emit('MODEL_REQUEST_DIAGNOSTIC',failure),
         },
       );
       const result = await stream.result();

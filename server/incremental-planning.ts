@@ -16,6 +16,12 @@ export const nextDeliverySchema = z.object({
   agentId: z.string(),
 }).strict();
 
+export function deliveryDecisionSchema(agents: {id:string;runtime:string}[]) {
+  const ids = [...new Set(agents.filter(a=>a.runtime==='harness').map(a=>a.id))];
+  if (!ids.length) throw new DomainError('SCOPE_MISSING','Nenhum agente de execução disponível.');
+  return nextDeliverySchema.extend({agentId:z.enum(ids as [string,...string[]])});
+}
+
 export function incrementalEligible(request: ObjectiveInput, previous?: ProposedPlan, glmOnly = false) {
   return !!previous?.incremental || (request.planningStrategy !== 'complete' &&
     (request.planningStrategy === 'incremental' || glmOnly) && request.mode === 'execute' &&
