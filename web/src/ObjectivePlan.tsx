@@ -1,5 +1,47 @@
 import React from 'react';
 type Row = Record<string, any>;
+
+const elapsed = (from?: string) => {
+  if (!from) return '--:--';
+  const n = Math.max(0, Math.floor((Date.now() - new Date(from).getTime()) / 1000));
+  return `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+};
+const seconds = (from?: string) =>
+  from ? Math.max(0, Math.floor((Date.now() - new Date(from).getTime()) / 1000)) : null;
+
+/** A long generation needs a signal that separates "alive" from "producing".
+ * The heartbeat proves the planner process is running; the stream progress
+ * proves the model is emitting. Neither shows generated content. */
+function PlanningActivity({ run }: { run: Row }) {
+  const [, tick] = React.useReducer((n: number) => n + 1, 0);
+  React.useEffect(() => {
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const beat = seconds(run.heartbeat_at);
+  const progress = run.progress as Row | undefined;
+  const sinceProgress = seconds(progress?.at);
+  const stalled = beat !== null && beat > 45;
+  return (
+    <div className="planning-activity" aria-live="polite">
+      <p>
+        <strong>{stalled ? 'Sem sinal do planejador' : 'Gerando o plano'}</strong> ·{' '}
+        {run.model} · tentativa {run.attempt} · há {elapsed(run.started_at)}
+      </p>
+      <p>
+        {progress
+          ? `${progress.characters.toLocaleString('pt-BR')} caracteres recebidos do modelo em ${progress.chunks} blocos` +
+            (sinceProgress !== null ? ` · último há ${sinceProgress}s` : '')
+          : 'Aguardando o primeiro bloco do modelo. Este provedor leva dezenas de segundos até começar a emitir.'}
+      </p>
+      <p className="goal-notice">
+        {stalled
+          ? `Último heartbeat há ${beat}s: o processo pode ter terminado sem confirmar. Nada será repetido automaticamente.`
+          : `Heartbeat há ${beat ?? '?'}s. Confirma que o planejador está vivo, não que o plano esteja correto.`}
+      </p>
+    </div>
+  );
+}
 export function ObjectivePlan({ detail }: { detail: Row }) {
   if (!detail.objective) return null;
   const o = detail.objective,
@@ -30,11 +72,9 @@ export function ObjectivePlan({ detail }: { detail: Row }) {
       </div>
       {run?.state === 'waiting_quota' && <p className="goal-notice">{run.error}</p>}
       {o.reason && <p className="goal-notice">{o.reason}</p>}
-      {run?.state === 'running' && (
-        <p>
-          O Planner está definindo entregas e dependências. {run.model} · o pedido está salvo e
-          continua após fechar esta tela.
-        </p>
+      {run?.state === 'running' && <PlanningActivity run={run} />}
+      {(run?.state === 'queued' || run?.state === 'running') && (
+        <p>O pedido está salvo e continua após fechar esta tela.</p>
       )}
       {plan && (
         <>

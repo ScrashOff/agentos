@@ -214,3 +214,27 @@ test('cancellation stops consuming a stream in flight', async () => {
   };
   await assert.rejects(readCompletionsStream(slow, controller.signal), { code: 'CANCELLED' });
 });
+
+test('streaming reports production without ever carrying generated content', async () => {
+  const reports = [];
+  let clock = 0;
+  const message = await readCompletionsStream(
+    sse([
+      { choices: [{ delta: { content: 'primeiro' } }] },
+      { choices: [{ delta: { content: ' segundo' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]),
+    undefined,
+    (p) => reports.push(p),
+    () => (clock += 4000),
+  );
+  assert.equal(message.content[0].text, 'primeiro segundo');
+  assert.ok(reports.length >= 2, 'progresso precisa ser reportado durante o fluxo');
+  assert.equal(reports.at(-1).done, true);
+  assert.ok(reports.at(-1).characters === 'primeiro segundo'.length);
+  assert.ok(reports.every((p) => Number.isFinite(p.chunks) && Number.isFinite(p.elapsedMs)));
+  // Nothing in a report may reveal what was generated.
+  const serialized = JSON.stringify(reports);
+  assert.ok(!serialized.includes('primeiro') && !serialized.includes('segundo'));
+});

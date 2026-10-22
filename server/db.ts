@@ -156,6 +156,9 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
 -- mirrors this table column for column.
 ALTER TABLE runs DROP COLUMN IF EXISTS parent_run_id;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
+-- Liveness of a long generation: a heartbeat proves the process is alive, this
+-- proves the model is actually producing. Never holds generated content.
+ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS progress jsonb;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_role text;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
 CREATE TABLE IF NOT EXISTS recall_imports (source_id text PRIMARY KEY, version text NOT NULL, memory_id uuid REFERENCES memories(id), project text NOT NULL);

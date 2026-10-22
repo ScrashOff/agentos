@@ -8,6 +8,7 @@ import { classifyProviderError } from './opencode-provider-error.mjs';
 export const RETRY_ATTEMPTS = 3;
 export const RETRY_BUDGET_MS = 30000;
 const MAX_DELAY_MS = 15000;
+export const PROGRESS_INTERVAL_MS = 3000;
 
 const textOf = (content) =>
   typeof content === 'string'
@@ -83,12 +84,15 @@ function buildMessage({ text, calls, finish, usage }) {
 /** Consume one chat-completions SSE body into the same internal message.
  * This provider streams at a few tokens per second, so a long generation that
  * is not streamed is one silent request held open for many minutes. */
-export async function readCompletionsStream(body, signal) {
+export async function readCompletionsStream(body, signal, onProgress, now = () => Date.now()) {
   const decoder = new TextDecoder();
+  const startedAt = now();
+  let chunks = 0, reportedAt = 0;
   const calls = new Map();
   let buffer = '', text = '', finish, usage;
   for await (const part of body) {
     if (signal?.aborted) throw cancelled();
+    chunks++;
     buffer += decoder.decode(part, { stream: true });
     let cut;
     while ((cut = buffer.indexOf('\n')) !== -1) {
@@ -115,7 +119,13 @@ export async function readCompletionsStream(body, signal) {
         calls.set(index, current);
       }
     }
+    // Throttled: a few tokens per second would otherwise write continuously.
+    if (onProgress && now() - reportedAt >= PROGRESS_INTERVAL_MS) {
+      reportedAt = now();
+      onProgress({ characters: text.length, chunks, elapsedMs: now() - startedAt });
+    }
   }
+  onProgress?.({ characters: text.length, chunks, elapsedMs: now() - startedAt, done: true });
   return buildMessage({ text, calls: [...calls.values()].sort((a, b) => a.index - b.index), finish, usage });
 }
 
@@ -190,7 +200,7 @@ export function openAICompletionsFallback({ fetch: fetchImpl = fetch, random = M
           }
           if (response.ok) {
             return /event-stream/i.test(response.headers.get('content-type') ?? '')
-              ? await readCompletionsStream(response.body, options.signal)
+              ? await readCompletionsStream(response.body, options.signal, options.onProgress)
               : fromCompletionsResponse(await response.json());
           }
           const failure = await classifyProviderError(response);

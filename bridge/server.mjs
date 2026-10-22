@@ -465,6 +465,7 @@ async function generate(params, signal, emit, admission) {
         {
           ...auth,
           signal: requestSignal,
+          onProgress: (progress) => emit('MODEL_STREAM_PROGRESS', progress),
           reasoning: params.reasoning ?? 'low',
           transport: 'sse',
           maxTokens: params.maxOutputTokens ?? 4096,
