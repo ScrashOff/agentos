@@ -16,7 +16,7 @@ import {
   type ProposedPlan,
 } from './objective-contracts.js';
 import { planningContext } from './planning-context.js';
-import { incrementalEligible, deliveryFrontier, deliveryDecisionSchema, compileDelivery, queueNextDelivery, assertIncrementalAuthority } from './incremental-planning.js';
+import { incrementalEligible, deliveryFrontier, deliveryDecisionSchema, compileDelivery, bindDeliveryFeedback, queueNextDelivery, assertIncrementalAuthority } from './incremental-planning.js';
 
 export async function submitObjective(raw: unknown) {
   const request = objectiveSchema.parse(raw);
@@ -135,6 +135,10 @@ async function queueFeedback(
   );
   if (!inserted.rowCount) return false;
   await event(db, 'PLANNING_FEEDBACK', id, { reason: description, taskIds });
+  if (o.mode === 'execute' && (await db.query("UPDATE goals SET state='active' WHERE id=$1 AND state='completed' RETURNING id",[id])).rowCount) {
+    await db.query("UPDATE objectives SET status='replanning',reason=NULL,updated_at=now() WHERE id=$1",[id]);
+    await event(db,'GOAL_ACTIVE',id,{reason:'objective_feedback'});
+  }
   return true;
 }
 export async function feedbackObjective(id: string, key: string, description: string) {
@@ -173,7 +177,13 @@ export async function reconcilePlanning() {
     ).rows;
     for (const o of objectives) {
       const latest = (await db.query('SELECT plan FROM plan_revisions WHERE objective_id=$1 ORDER BY revision DESC LIMIT 1', [o.id])).rows[0]?.plan;
-      if (latest?.incremental && await queueNextDelivery(db, o, latest)) continue;
+      // New evidence must be considered before an automatic successor. Keep
+      // running attempts fenced; reconciliation below waits for a safe boundary.
+      const hasPendingFeedback = (await db.query(`SELECT 1 FROM objective_feedback f
+        WHERE f.objective_id=$1 AND NOT EXISTS(SELECT 1 FROM planning_runs p
+          WHERE p.objective_id=f.objective_id AND p.state='completed'
+            AND p.feedback->'feedbackIds' ? f.id::text) LIMIT 1`,[o.id])).rowCount;
+      if (!hasPendingFeedback && latest?.incremental && await queueNextDelivery(db, o, latest)) continue;
       const failed = (
         await db.query(
           "SELECT t.*,r.id run_id,r.summary,r.error_code FROM tasks t JOIN LATERAL(SELECT * FROM runs WHERE task_id=t.id ORDER BY attempt DESC LIMIT 1) r ON true WHERE t.goal_id=$1 AND t.state='recovery_blocked'",
@@ -242,6 +252,17 @@ export async function reconcilePlanning() {
         continue;
       }
       const sourceOverrides: Record<string, string> = {};
+      // Feedback may challenge an accepted lot, not only a failed run. Preserve
+      // its latest implementation as repair INPUT; this does not certify it.
+      const repairInput = latest?.incremental ? (await db.query(`SELECT t.execution,r.id run_id,a.id,a.name,a.digest
+        FROM tasks t JOIN runs r ON r.task_id=t.id AND r.attempt=t.attempt_count
+        JOIN artifacts a ON a.run_id=r.id AND a.name='candidate.json'
+        WHERE t.goal_id=$1 AND t.plan_revision=$2 AND t.stage='work' AND t.state='accepted'
+          AND r.state='submitted' AND t.execution->>'kind'='harness'
+          AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.run_id=r.id)
+        ORDER BY a.created_at DESC,a.id DESC LIMIT 1`,[o.id,o.revision])).rows[0] : undefined;
+      if (repairInput?.execution?.baseWorkspace && repairInput.execution.workspace)
+        sourceOverrides[repairInput.execution.baseWorkspace] = repairInput.execution.workspace;
       for (const t of failed)
         if (t.execution?.baseWorkspace)
           sourceOverrides[t.execution.baseWorkspace] = t.execution.workspace;
@@ -251,6 +272,8 @@ export async function reconcilePlanning() {
           [failed.map((t) => t.run_id)],
         )
       ).rows;
+      if (repairInput && !artifacts.some(a=>a.id===repairInput.id))
+        artifacts.push({id:repairInput.id,name:repairInput.name,digest:repairInput.digest});
       const feedback = {
         acceptedCount,
         feedbackIds: pending.map((p) => p.id),
@@ -702,13 +725,17 @@ export class PlanningEngine {
         ]);
         const rawDecision = JSON.parse(text.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, ''));
         const decision = incremental ? deliveryDecisionSchema(context.agents).parse(rawDecision) : rawDecision;
-        plan = incremental ? compileDelivery(decision, run.request, previous, !!run.feedback?.incrementalAdvance) : planSchema.parse(decision);
+        plan = incremental ? compileDelivery(decision, run.request, previous, !!run.feedback?.incrementalAdvance, run.feedback?.reports) : planSchema.parse(decision);
         validatePlan(plan, run.request, context.agents, accounts, previous?.requirements);
         await pool.query(
           "UPDATE planning_runs SET output=$3 WHERE id=$1 AND fence=$2 AND state='running'",
           [run.id, run.fence, JSON.stringify(plan)],
         );
       }
+      const boundPlan = bindDeliveryFeedback(plan,run.feedback?.reports);
+      if (JSON.stringify(boundPlan) !== JSON.stringify(plan))
+        await pool.query("UPDATE planning_runs SET output=$3 WHERE id=$1 AND fence=$2 AND state='running'",[run.id,run.fence,JSON.stringify(boundPlan)]);
+      plan = boundPlan;
       validatePlan(plan, run.request, context.agents, accounts, previous?.requirements);
       // Prepare one immutable logical baseline per source before creating runnable tasks.
       if (

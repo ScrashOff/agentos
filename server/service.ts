@@ -175,6 +175,11 @@ export async function refreshGoal(db: DB, id: string) {
   if (state === 'completed') {
     const latest = (await db.query('SELECT plan FROM plan_revisions WHERE objective_id=$1 ORDER BY revision DESC LIMIT 1',[id])).rows[0]?.plan;
     if (latest?.incremental?.pendingRequirementIds?.length) state = 'active';
+    if (state === 'completed' && (await db.query(`SELECT 1 FROM objective_feedback f
+      WHERE f.objective_id=$1 AND NOT EXISTS(SELECT 1 FROM planning_runs p
+        WHERE p.objective_id=f.objective_id AND p.state='completed'
+          AND p.feedback->'feedbackIds' ? f.id::text) LIMIT 1`,[id])).rowCount)
+      state = 'active';
   }
   const old = (await db.query('SELECT state FROM goals WHERE id=$1', [id])).rows[0];
   if (old.state !== state && old.state !== 'paused') {

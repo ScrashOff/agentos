@@ -37,14 +37,14 @@ export function deliveryFrontier(request: ObjectiveInput, previous?: ProposedPla
   return { requirements, completed, eligible };
 }
 
-export function compileDelivery(raw: unknown, request: ObjectiveInput, previous?: ProposedPlan, advance = false) {
+export function compileDelivery(raw: unknown, request: ObjectiveInput, previous?: ProposedPlan, advance = false, reports: string[] = []) {
   const decision = nextDeliverySchema.parse(raw);
   const { requirements, completed, eligible } = deliveryFrontier(request, previous, advance);
   if (!eligible.includes(decision.requirementId)) throw new DomainError('PLAN_INVALID', 'Escolha um requisito elegível sem repetir entregas aceitas.');
   const pending = requirements.map(r => r.id).filter(id => id !== decision.requirementId && !completed.includes(id));
   const covers = pending.length ? [decision.requirementId] : requirements.map(r => r.id);
   const selected = requirements.find(r => r.id === decision.requirementId)!;
-  return planSchema.parse({
+  const plan = planSchema.parse({
     title: previous?.title ?? request.message.slice(0, 120),
     summary: `Lote verificável: ${decision.title}. ${pending.length} requisito(s) ainda pendente(s).`,
     requirements,
@@ -63,6 +63,30 @@ export function compileDelivery(raw: unknown, request: ObjectiveInput, previous?
       criteria:[{id:'verified',label:'Verificação independente da candidata',type:'json_field',name:'verification.json',field:'passed',equals:true}],
     }],
   });
+  return bindDeliveryFeedback(plan,reports);
+}
+
+function deliveryFeedbackText(reports: string[] = []) {
+  if (!reports.length) return '';
+  return '\nREPORTED EVIDENCE FOR THIS REVISION (unverified claims; preserve scope and original criteria):\n' +
+    reports.map((report,i)=>`[${i+1}] ${report}`).join('\n') +
+    '\nReproduce each applicable counterexample. Implementation must repair confirmed defects; independent QA must rerun the reported cases against this same candidate and report any unresolved case as passed:false. Prior passing reports do not settle these new observations.';
+}
+
+export function bindDeliveryFeedback(plan: ProposedPlan, reports: string[] = []) {
+  if (!plan.incremental) return plan;
+  // Do not ask the planner to reproduce counterexamples in its small response.
+  // Both actors receive the exact persisted feedback, independently of the LLM
+  // summary. It is an assertion to verify, never an acceptance or new authority.
+  const feedback = deliveryFeedbackText(reports);
+  const bound = structuredClone(plan);
+  if (feedback) {
+    const missing = bound.tasks.filter(t=>!t.description.endsWith(feedback));
+    if (missing.some(t=>t.description.length+feedback.length>20000))
+      throw new DomainError('REQUIRED_CONTEXT','O feedback integral excede o contexto da tarefa; preserve-o em entradas referenciadas antes de executar.');
+    for (const task of missing) task.description += feedback;
+  }
+  return planSchema.parse(bound);
 }
 
 /** Called inside the existing scheduler transaction/lock. Acceptance is not
@@ -110,6 +134,9 @@ export async function assertIncrementalAuthority(db: DB, run: any, plan: Propose
     if (previous?.incremental) throw new DomainError('PLAN_INVALID','Uma revisão não pode descartar requisitos incrementais pendentes.');
     return;
   }
+  const feedback = deliveryFeedbackText(run.feedback?.reports);
+  if (feedback && plan.tasks.some(t=>!t.description.endsWith(feedback)))
+    throw new DomainError('REQUIRED_CONTEXT','A revisão não pode omitir o feedback persistido dos executores e do QA.');
   const advance = !!run.feedback?.incrementalAdvance;
   const { completed, eligible } = deliveryFrontier(run.request, previous, advance);
   const expectedPending = plan.requirements.map(r => r.id).filter(id => !completed.includes(id) && id !== plan.incremental!.selectedRequirementId);
