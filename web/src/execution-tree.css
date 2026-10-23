@@ -1,5 +1,5 @@
 /* ==========================================================================
-   AgentOS — Multi-Agent Execution Tree View (30 Concurrent Agents)
+   AgentOS — execution hierarchy
    Design System: Glassmorphism, Neon Indicators, Branch Hierarchy
    ========================================================================== */
 
@@ -963,5 +963,17 @@
   background: rgba(17, 27, 43, 0.85);
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.execution-tree-container, .execution-tree-container * { box-sizing: border-box; }
+.execution-tree-container .goal-progress-stats { gap: 0.75rem; flex-wrap: wrap; }
+.execution-tree-container .goal-banner-title,
+.tree-drawer .drawer-title, .tree-drawer .diff-file-path { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .execution-tree-container .tree-dashboard { grid-template-columns: 1fr; padding: 0.75rem; }
+  .execution-tree-container .node-identity { min-width: 0; flex-wrap: wrap; }
+  .execution-tree-container .tree-children-container { margin-left: 0.5rem; padding-left: 0.5rem; }
+  .execution-tree-container .node-card-header { flex-wrap: wrap; }
+  .tree-drawer .drawer-tabs { flex-wrap: wrap; }
 }
 

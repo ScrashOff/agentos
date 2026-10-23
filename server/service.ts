@@ -175,6 +175,11 @@ export async function refreshGoal(db: DB, id: string) {
   if (state === 'completed') {
     const latest = (await db.query('SELECT plan FROM plan_revisions WHERE objective_id=$1 ORDER BY revision DESC LIMIT 1',[id])).rows[0]?.plan;
     if (latest?.incremental?.pendingRequirementIds?.length) state = 'active';
+    if (state === 'completed' && (await db.query(`SELECT 1 FROM objective_feedback f
+      WHERE f.objective_id=$1 AND NOT EXISTS(SELECT 1 FROM planning_runs p
+        WHERE p.objective_id=f.objective_id AND p.state='completed'
+          AND p.feedback->'feedbackIds' ? f.id::text) LIMIT 1`,[id])).rowCount)
+      state = 'active';
   }
   const old = (await db.query('SELECT state FROM goals WHERE id=$1', [id])).rows[0];
   if (old.state !== state && old.state !== 'paused') {
@@ -406,10 +411,8 @@ export async function schedule(service?:'agentos-opencode',inspect=inspectPrepar
           ).rows[0].count,
         );
         const exclusive = readModelPolicy();
-        // A policy without a session limit must not turn the ceiling into NaN
-        // and silently drop the per-account session cap.
-        const sessionCeiling = Number.isSafeInteger(exclusive?.sessionLimit)
-          ? Math.min(a.max_concurrency, exclusive!.sessionLimit - (t.stage === 'coordinate' ? 0 : 1)) : a.max_concurrency;
+        const sessionCeiling = exclusive
+          ? Math.min(a.max_concurrency, exclusive.sessionLimit - (t.stage === 'coordinate' ? 0 : 1)) : a.max_concurrency;
         if (n >= sessionCeiling) {
           why = 'Vagas desta conta ocupadas.';
           continue;
@@ -531,7 +534,7 @@ export async function schedule(service?:'agentos-opencode',inspect=inspectPrepar
       await db.query(
         'INSERT INTO runs(id,task_id,attempt,fence,account_id,runtime,agent_version,checkpoint,parent_task_id,agent_role,agent_level) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
         [id, t.id, t.attempt_count + 1, fence, account.id, prepared?'opencode':t.runtime, prepared?.receipt.route.agentVersion??t.agent_version,
-          prepared?JSON.stringify(prepared.checkpoint):null, t.parent_task_id ?? null, t.agent_role ?? null, t.agent_level ?? 0],
+          prepared?JSON.stringify(prepared.checkpoint):null,t.parent_task_id??null,t.agent_role??null,t.agent_level??0],
       );
       if(!prepared)await db.query(
         'UPDATE runs SET checkpoint=(SELECT checkpoint FROM runs WHERE task_id=$2 AND id<>$1 AND checkpoint IS NOT NULL ORDER BY attempt DESC LIMIT 1) WHERE id=$1',

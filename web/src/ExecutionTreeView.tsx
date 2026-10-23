@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -121,12 +121,14 @@ function resolveWritePaths(task: Row): string[] {
 }
 
 export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewProps) {
-  const { tasks = [], dependencies = [], runs = [], acceptances = [], goal } = detail;
+  const { tasks: history = [], dependencies = [], runs = [], acceptances = [], goal } = detail;
+  const tasks = useMemo(() => history.filter((task: Row) => !['cancelled', 'superseded'].includes(task.state)), [history]);
   const [filterRole, setFilterRole] = useState<string>('all');
   const [filterState, setFilterState] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const [inspectedNode, setInspectedNode] = useState<TreeNode | null>(null);
+  const [inspectedId, setInspectedId] = useState<string | null>(null);
+  const expandedGoal = useRef<string | null>(null);
   const [drawerTab, setDrawerTab] = useState<'overview' | 'prompt' | 'files' | 'logs' | 'criteria'>('overview');
   const [now, setNow] = useState(Date.now());
 
@@ -137,7 +139,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
   }, []);
 
   // Compute Tree Nodes
-  const { treeRoots, allNodeIds, metrics } = useMemo(() => {
+  const { treeRoots, allNodeIds, nodes, metrics } = useMemo(() => {
     const runsByTask = new Map<string, Row[]>();
     for (const r of runs) {
       const list = runsByTask.get(r.task_id) || [];
@@ -164,7 +166,8 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
       let nodeTokens = 0;
       for (const r of taskRuns) {
         if (r.usage) {
-          nodeTokens += (r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0);
+          nodeTokens += r.usage.totalTokens ?? r.usage.total_tokens ??
+            ((r.usage.input ?? r.usage.prompt_tokens ?? 0) + (r.usage.output ?? r.usage.completion_tokens ?? 0) + (r.usage.cacheRead ?? 0));
         }
       }
       globalTokens += nodeTokens;
@@ -217,29 +220,9 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
       }
     }
 
-    // Pass 2: dependency inference for unparented nodes
-    const depMap = new Map<string, string[]>();
-    for (const d of dependencies) {
-      const list = depMap.get(d.task_id) || [];
-      list.push(d.depends_on);
-      depMap.set(d.task_id, list);
-    }
-
-    for (const node of nodeMap.values()) {
-      if (!childIds.has(node.id) && !node.task.parent_task_id) {
-        const parents = depMap.get(node.id);
-        if (parents && parents.length > 0) {
-          const directParentId = parents[0];
-          const directParent = nodeMap.get(directParentId);
-          // Only nest if parent is higher in hierarchy
-          if (directParent && directParent.level < node.level && directParent.id !== node.id) {
-            directParent.children.push(node);
-            childIds.add(node.id);
-          }
-        }
-      }
-    }
-
+    // Dependencies are execution order, not evidence of delegation. Legacy
+    // tasks without explicit parents stay at the root rather than inventing
+    // a reporting relationship from the first dependency.
     // Root nodes are those not claimed as children
     for (const node of nodeMap.values()) {
       if (!childIds.has(node.id)) {
@@ -254,6 +237,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
     const allIds = new Set(nodeMap.keys());
     return {
       treeRoots: roots,
+      nodes: nodeMap,
       allNodeIds: allIds,
       metrics: {
         total: tasks.length,
@@ -265,22 +249,16 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
     };
   }, [tasks, dependencies, runs, data, acceptances]);
 
-  // Keep inspectedNode in sync if tasks change
-  useEffect(() => {
-    if (inspectedNode) {
-      const freshTask = tasks.find((t: Row) => t.id === inspectedNode.id);
-      if (freshTask) {
-        setInspectedNode((prev) => (prev ? { ...prev, task: freshTask } : null));
-      }
-    }
-  }, [tasks]);
+  const inspectedNode = inspectedId ? nodes.get(inspectedId) ?? null : null;
+  const setInspectedNode = (node: TreeNode | null) => setInspectedId(node?.id ?? null);
 
   // Expand all by default on first load
   useEffect(() => {
-    if (allNodeIds.size > 0 && expandedNodes.size === 0) {
+    if (allNodeIds.size > 0 && expandedGoal.current !== (goal?.id ?? 'current')) {
       setExpandedNodes(new Set(allNodeIds));
+      expandedGoal.current = goal?.id ?? 'current';
     }
-  }, [allNodeIds]);
+  }, [allNodeIds, goal?.id]);
 
   const toggleExpand = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -534,7 +512,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
             <div className="goal-banner-meta">
               <span className="goal-project-pill">{goal.project || 'AgentOS'}</span>
               <span className={`goal-status-badge ${goal.state === 'paused' ? 'paused' : 'active'}`}>
-                {goal.state === 'paused' ? 'Pausado' : goal.state === 'completed' ? 'Concluído' : 'Operação Ativa'}
+                {({paused:'Pausado',completed:'Concluído',active:'Ativo',planning:'Planejando',replanning:'Replanejando',cancelled:'Cancelado',failed:'Falhou',blocked:'Bloqueado'} as Record<string,string>)[goal.state] ?? goal.state}
               </span>
             </div>
             <span style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
@@ -546,7 +524,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
 
           <div className="goal-banner-progress-area">
             <div className="goal-progress-stats">
-              <span>Progresso da Decomposição Hierárquica</span>
+              <span>Aceite das tarefas atuais · não representa o aceite final do objetivo</span>
               <strong>{metrics.accepted} de {metrics.total} etapas aceitas ({progressPercent}%)</strong>
             </div>
             <div className="goal-progress-bar-wrap">
@@ -566,9 +544,9 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
             <Layers size={22} />
           </div>
           <div className="metric-data">
-            <span className="metric-label">Escala de Agentes</span>
-            <span className="metric-value">{metrics.total} / 30</span>
-            <span className="metric-sub">Capacidade concorrente ativa</span>
+            <span className="metric-label">Tarefas atuais</span>
+            <span className="metric-value">{metrics.total}</span>
+            <span className="metric-sub">Inclui fila, execução e aceite</span>
           </div>
         </div>
 
@@ -601,7 +579,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
           <div className="metric-data">
             <span className="metric-label">Consumo de Tokens</span>
             <span className="metric-value">{formatTokens(metrics.tokens)}</span>
-            <span className="metric-sub">Verboo / OpenAI LLMs</span>
+            <span className="metric-sub">Uso registrado nas tentativas</span>
           </div>
         </div>
       </div>
@@ -748,7 +726,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
                       <div>
                         <dt>Modelo & Provedor</dt>
                         <dd>
-                          {inspectedNode.latestRun?.model ?? inspectedNode.task.model ?? 'Verboo / OpenAI'}
+                          {inspectedNode.latestRun?.model ?? inspectedNode.task.model ?? 'Ainda não selecionado'}
                         </dd>
                       </div>
                       <div>
@@ -830,7 +808,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
                     Contrato de Instrução do Subagente
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.78rem', color: '#94a3b8' }}>
-                    Contexto delimitado seguindo as diretrizes Anthropic Claude Code para evitar poluição da janela de contexto.
+                    Instruções e escopo registrados para esta tarefa.
                   </p>
                   <pre className="code-pre-box">{inspectedNode.task.description}</pre>
                 </div>
@@ -920,7 +898,7 @@ export function ExecutionTreeView({ detail, data, inspect }: ExecutionTreeViewPr
                     Critérios de Aceite Obrigatórios
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.78rem', color: '#94a3b8' }}>
-                    A conclusão da tarefa só é aprovada após validação empírica de todos os critérios.
+                    Resultado dos critérios registrados. O aceite final do objetivo é verificado separadamente.
                   </p>
                   <ul className="criteria-list-check">
                     {(inspectedNode.task.criteria || []).map((c: Row) => {

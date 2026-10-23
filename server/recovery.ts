@@ -149,6 +149,10 @@ export async function recoverStoppedTasks() {
           [source.source_run_id],
         )
       ).rows;
+      const handoff = source.execution?.workspace ? (await db.query(`SELECT e.payload FROM events e JOIN runs r ON r.id=$1
+        WHERE e.kind='RUNTIME_HANDOFF' AND e.payload->>'runId'=r.id::text
+        AND e.payload->>'runFence'=r.fence::text AND e.payload->>'workspace'=$2
+        ORDER BY e.id DESC LIMIT 1`,[source.source_run_id,source.execution.workspace])).rows[0]?.payload : undefined;
       const checkpoint = {
         kind: 'automatic_recovery',
         sourceRunId: source.source_run_id,
@@ -158,6 +162,7 @@ export async function recoverStoppedTasks() {
         failedChecks,
         errorCode: source.error_code,
         artifacts,
+        ...(handoff ? {unverifiedHandoff:handoff} : {}),
         previousRecoveries: history.map((h: any) => ({
           sourceRunId: h.source_run_id,
           strategy: h.strategy,

@@ -77,13 +77,11 @@ test('a tool call reply becomes internal content and a toolUse stop reason', () 
     { type: 'text', text: 'calling' },
     { type: 'toolCall', id: 'c1', name: 'write', arguments: { path: 'a.ts' } },
   ]);
-  assert.deepEqual(message.usage, { input: 10, output: 4, totalTokens: 14 });
-  // Unparseable arguments must not abort the turn.
-  const broken = fromCompletionsResponse({
-    choices: [{ message: { tool_calls: [{ id: 'c2', function: { name: 'x', arguments: '{' } }] } }],
-  });
-  assert.deepEqual(broken.content[0].arguments, {});
-  assert.equal(fromCompletionsResponse({ choices: [{ message: { content: 'a' }, finish_reason: 'length' }] }).stopReason, 'length');
+  assert.deepEqual(message.usage, { input: 10, output: 4, cacheRead:0, totalTokens: 14 });
+  assert.throws(()=>fromCompletionsResponse({
+    choices: [{ message: { tool_calls: [{ id: 'c2', function: { name: 'x', arguments: '{' } }] },finish_reason:'tool_calls' }],
+  }),{code:'MODEL_INCOMPLETE_RESPONSE'});
+  assert.throws(()=>fromCompletionsResponse({ choices: [{ message: { content: 'a' }, finish_reason: 'length' }] }),{code:'MODEL_OUTPUT_LIMIT'});
 });
 
 test('a credential never leaves the host over cleartext', async () => {
@@ -188,7 +186,7 @@ test('a streamed reply is assembled from deltas split across chunk boundaries', 
     { type: 'toolCall', id: 'c1', name: 'write', arguments: { path: 'a.php' } },
   ]);
   assert.equal(message.stopReason, 'toolUse');
-  assert.deepEqual(message.usage, { input: 7, output: 9, totalTokens: 16 });
+  assert.deepEqual(message.usage, { input: 7, output: 9, cacheRead:0, totalTokens: 16 });
 });
 
 test('an event-stream response is consumed as a stream, not parsed as one JSON body', async () => {

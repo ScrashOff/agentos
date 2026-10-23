@@ -247,6 +247,20 @@ describe('Durable control plane', () => {
     expect((await pool.query('SELECT * FROM recoveries')).rowCount).toBe(1);
     expect((await pool.query('SELECT * FROM acceptances WHERE passed=true')).rowCount).toBe(0);
   });
+  it.each(['MODEL_TIMEOUT', 'MODEL_CLIENT_DISCONNECTED', 'CANCELLED'])(
+    'requires stop evidence and recovers transport failure %s without replaying a user cancellation', async (code) => {
+      await service.createGoal(goal([task('first', { recovery: { mode: 'automatic' }, maxAttempts: 3 })]), true);
+      const [id] = await service.schedule(), run = await service.startRun(id, 'test');
+      await service.failRun(id, run.fence, code, code);
+      expect(await recoverStoppedTasks()).toEqual([]);
+      await pool.query("INSERT INTO events(kind,entity_id,payload) VALUES('HARNESS_STOPPED',$1,$2)", [
+        run.task_id, JSON.stringify({ runId: id, confirmed: true }),
+      ]);
+      expect(await recoverStoppedTasks()).toEqual(code === 'CANCELLED' ? [] : [run.task_id]);
+      expect((await getTask()).state).toBe(code === 'CANCELLED' ? 'failed' : 'retry_scheduled');
+      expect((await pool.query('SELECT * FROM acceptances WHERE passed=true')).rowCount).toBe(0);
+    },
+  );
   it('rejects repair routes outside the dependency ancestry', async () => {
     await expect(
       service.createGoal(

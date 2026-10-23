@@ -1795,9 +1795,7 @@ function GoalDetail({
       {tab === 'overview' && (
         <GoalOverview detail={detail} data={data} inspect={setSelectedTaskId} />
       )}
-      {tab === 'tree' && (
-        <ExecutionTreeView detail={detail} data={data} inspect={setSelectedTaskId} />
-      )}
+      {tab === 'tree' && <ExecutionTreeView detail={detail} data={data} inspect={setSelectedTaskId} />}
       {tab === 'plan' && (
         <>
           <Panel title="Plano de execução" subtitle="As dependências são liberadas após aceite">

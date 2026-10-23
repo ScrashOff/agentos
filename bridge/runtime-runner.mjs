@@ -1,5 +1,4 @@
 import { assertModelRoute } from './model-policy.mjs';
-import os from 'node:os';
 import { createRuntimeGuidanceServer } from './runtime-guidance.mjs';
 import { prepareSandboxLocalhost } from './sandbox-localhost.mjs';
 import { prepareRepairFinalization, finalizeRepairArtifacts, repairFinalizationInstruction } from './repair-finalizer.mjs';
@@ -7,13 +6,13 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile, realpath, stat, readdir } from 'node:fs/promises';
-import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { GLM_REQUEST_ADMITTED, glmRequestBudgetMs, inGlmRequestLane, withAccountRequestGate } from './gated-generation.mjs';
+import { GLM_ACCOUNT, GLM_REQUEST_ADMITTED, withAccountRequestGate } from './gated-generation.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { toGeneration, completion, fromMessages, messagesEvents, messagesError } from './runtime-gateway.mjs';
+import { toGeneration, completion } from './runtime-gateway.mjs';
+import { bufferedModelChannel, WORKER_MODEL_TIMEOUT_MS } from './runtime-model-channel.mjs';
 import { workspaceOperation } from './workspaces.mjs';
 import { materializeSourceInputs } from './source-inputs.mjs';
 import {hydrateArtifactInputBundle,referencedInputLimitBytes} from './artifact-input-bundle.mjs';
@@ -22,28 +21,16 @@ import { preserveRuntimeArtifactClaims, runtimeArtifactInstruction } from './run
 import { deliveryContract, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstruction } from './delivery-manifest.mjs';
 import {analyzePollTrace} from './runtime-progress.mjs';
 import {inspectRuntimeProgress,checkpointRuntimeProgress} from './inspect-runtime-progress.mjs';
+import {captureRuntimeHandoff,runtimeHandoffInstruction} from './runtime-handoff.mjs';
 import {harnessMemory} from './runtime-memory.mjs';
 import {stopUnit} from './process-stop.mjs';
 import {inspectUnitExit} from './unit-exit.mjs';
 import {harnessFailureCode,harnessTurnFailureCode} from './harness-termination.mjs';
 import {projectHarnessToolFailure,rememberHarnessToolCall,forgetHarnessToolCall} from './runtime-tool-failure.mjs';
 
-// Path guards across the bridge require canonical roots. Resolve the platform's
-// own symlinks (macOS maps /var to /private/var) once, here, so every guard
-// keeps comparing realpath to the path it was given.
-function canonicalRoot(value) {
-  const target = path.resolve(value);
-  try {
-    mkdirSync(target, { recursive: true, mode: 0o700 });
-    return realpathSync(target);
-  } catch {
-    return target;
-  }
-}
-const DATA_BASE = canonicalRoot(process.env.AGENTOS_BRIDGE_DATA || (existsSync('/var/lib/agentos-bridge') ? '/var/lib/agentos-bridge' : '.local/bridge'));
-const DATA = path.join(DATA_BASE, 'worker-runs');
-const ROOT = canonicalRoot(process.env.AGENTOS_WORKSPACES_ROOT || (existsSync('/srv/agentos/workspaces') ? '/srv/agentos/workspaces' : '.local/workspaces'));
-const NODE = process.env.AGENTOS_NODE_BIN || process.execPath;
+const DATA = '/var/lib/agentos-bridge/worker-runs';
+const ROOT = '/srv/agentos/workspaces';
+const NODE = '/opt/deepseek-harness/node/bin/node';
 const uuid = /^[0-9a-f-]{36}$/;
 const key = /^[a-z0-9_-]+\/[a-z0-9_-]+$/;
 const digest = (b) => createHash('sha256').update(b).digest('hex');
@@ -68,8 +55,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
   try{params=await hydrateArtifactInputBundle(params,signal);}
   catch(e){emit('HARNESS_NOT_STARTED',{confirmed:true,phase:'input_bundle',code:e.code??'INPUT_BUNDLE_INVALID'});throw e;}
   if (params.accountId?.startsWith('agentos:muse:')) {
-    const accountsFile = existsSync(path.join(DATA_BASE, 'accounts.json')) ? path.join(DATA_BASE, 'accounts.json') : '/var/lib/agentos-bridge/accounts.json';
-    const accounts = existsSync(accountsFile) ? JSON.parse(await readFile(accountsFile, 'utf8')) : [];
+    const accounts = JSON.parse(await readFile('/var/lib/agentos-bridge/accounts.json', 'utf8'));
     const account = accounts.find(a => a.id === params.accountId && a.family === 'muse');
     if (!account) throw error('ACCOUNT_MISSING');
     const { museCredential } = await import('./muse-accounts.mjs');
@@ -96,14 +82,8 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
       () => false,
     ));
   // Admission includes host activity outside AgentOS; the slot runner also checks before exec.
-  let availableKiB = 0;
-  try {
-    const mem = await readFile('/proc/meminfo', 'utf8');
-    availableKiB = Number(mem.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0);
-  } catch {
-    availableKiB = Math.floor(os.freemem() / 1024);
-  }
-  if (availableKiB < memory.minAvailableKiB) throw error('HOST_CAPACITY');
+  const mem = await readFile('/proc/meminfo', 'utf8');
+  if (Number(mem.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) < memory.minAvailableKiB) throw error('HOST_CAPACITY');
   await mkdir(DATA, { recursive: true, mode: 0o700 });
   const dir = `${DATA}/${params.runId}`,
     home = `${dir}/home`,
@@ -170,27 +150,20 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
   // happens at the next generation boundary, while no new tool can be issued.
   const progressRows=[];
   let progressSequence=0,progressProbeDue=false,progressCheckpoint=null;
+  let handoffAt=0,handoffDigest=null;
+  const checkpointHandoff=async()=>{
+    if (!params.managed || !params.runFence) return;
+    handoffAt=Date.now();
+    const handoff=await captureRuntimeHandoff(params);
+    if(handoff && handoff.digest!==handoffDigest){handoffDigest=handoff.digest;emit('RUNTIME_HANDOFF',handoff);}
+  };
   const gateway = createServer(async (req, res) => {
-    const controller = new AbortController();
+    const channel = bufferedModelChannel(res, signal);
     // GLM waits for a host-wide permit before its provider timeout starts.
-    // The same lane the gate itself recognizes, by account or by GLM model:
-    // deciding it differently here spent a permit while a fixed deadline ran
-    // over the queue wait, which is the one thing a permit must cover.
-    const gatedRequest = inGlmRequestLane({ accountId: params.accountId, model: params.model });
-    let heartbeat = null;
-    const requestTimeout = gatedRequest ? null : AbortSignal.timeout(300000);
-    const abort = () => controller.abort();
-    signal.addEventListener('abort', abort, { once: true });
-    res.on('close', abort);
+    const gatedRequest = params.accountId === GLM_ACCOUNT;
+    const requestTimeout = gatedRequest ? null : AbortSignal.timeout(WORKER_MODEL_TIMEOUT_MS);
     try {
-      // The pinned runtime speaks Messages; older adapters speak completions.
-      const wire =
-        req.url === '/v1/messages'
-          ? 'messages'
-          : req.url === '/v1/chat/completions'
-            ? 'completions'
-            : null;
-      if (req.method !== 'POST' || !wire) {
+      if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
         res.writeHead(404);
         res.end();
         return;
@@ -200,6 +173,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         body += chunk;
         if (body.length > 1500000) throw error('CONTEXT_TOO_LARGE');
       }
+      channel.start();
       if(progressProbeDue&&uuid.test(params.runFence??'')) {
         progressProbeDue=false;
         const proof=await inspectRuntimeProgress(params.runId,params.workspace);
@@ -219,10 +193,11 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
           }
         }
       }
-      const input = (wire === 'messages' ? fromMessages : toGeneration)(JSON.parse(body), {
+      if(Date.now()-handoffAt>60000)await checkpointHandoff();
+      const input = toGeneration(JSON.parse(body), {
         accountId: params.accountId,
         model: params.model,
-        reasoning: 'high',
+        reasoning: params.model === 'glm-5.3-flash' ? 'low' : 'high',
       });
       requests++;
       emit('MODEL_REQUEST', {
@@ -231,24 +206,12 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         accountId: params.accountId,
         model: params.model,
       });
-      // The Messages adapter arms its idle watchdog before the request, so the
-      // stream opens now and keeps pulsing while the gated call waits for its
-      // permit and its answer. Comments carry no events to the agent loop.
-      if (wire === 'messages') {
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.write(': open\n\n');
-        heartbeat = setInterval(() => {
-          if (!res.writableEnded) res.write(': keep-alive\n\n');
-        }, 15000);
-      }
       // Own admission here as well: an older long-lived bridge can load this
       // runtime while retaining its original ungated generate callback. Newer
       // bridges recognize the private symbol and do not acquire twice.
       const result = await withAccountRequestGate(
-        gatedRequest
-          ? { ...input, runId: params.runId, requestTimeoutMs: glmRequestBudgetMs() }
-          : input,
-        requestTimeout ? AbortSignal.any([controller.signal, requestTimeout]) : controller.signal,
+        gatedRequest ? { ...input, runId: params.runId, requestTimeoutMs: WORKER_MODEL_TIMEOUT_MS } : input,
+        requestTimeout ? AbortSignal.any([channel.signal, requestTimeout]) : channel.signal,
         (requestSignal) => generate(input, requestSignal, GLM_REQUEST_ADMITTED),
         emit,
       );
@@ -259,39 +222,15 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         stopReason: result.message.stopReason,
         tokens: result.message.usage?.totalTokens ?? null,
       });
-      if (wire === 'messages') {
-        for (const event of messagesEvents(result.message, params.model))
-          res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
-        res.end();
-      } else {
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        for (const frame of completion(result.message, params.model))
-          res.write('data: ' + JSON.stringify(frame) + '\n\n');
-        res.end('data: [DONE]\n\n');
-      }
+      channel.finish(completion(result.message, params.model));
     } catch (e) {
-      gatewayError =
-        (requestTimeout?.aborted || e.name === 'TimeoutError') && !controller.signal.aborted
-          ? 'MODEL_TIMEOUT'
-          : /quota|429|rate.limit/i.test(e.message)
-            ? 'QUOTA_EXCEEDED'
-            : /auth|credential|401|403/i.test(e.message)
-              ? 'AUTH_REQUIRED'
-              : (e.code ?? 'MODEL_REQUEST_FAILED');
+      gatewayError = channel.failureCode(requestTimeout?.aborted ? requestTimeout.reason : e);
       emit('MODEL_ERROR', { code: gatewayError });
-      if (res.headersSent) {
-        const failure = messagesError(gatewayError);
-        res.write('event: error\ndata: ' + JSON.stringify(failure) + '\n\n');
-        res.end();
-      } else {
-        res.writeHead(400, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: gatewayError, type: 'agentos_gateway' } }));
-      }
+      channel.fail(gatewayError);
       // A broken provider call must not leave an apparently running, idle agent loop.
       fail(error(gatewayError));
     } finally {
-      if (heartbeat) clearInterval(heartbeat);
-      signal.removeEventListener('abort', abort);
+      channel.dispose();
     }
   });
   await new Promise((resolve, reject) => {
@@ -589,7 +528,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     const prompt = `${params.prompt}${roleClosure}${sourceInputs.instruction}\n\nContext manifest and shared memory: /home/agent/context.json\nInputs: /home/agent/inputs/\nRoutine code errors, failing tests and missing references that can be fixed in this workspace are implementation work, not external blockers. When assigned implementation, edit and test until the scoped task is done; do not return only a diagnosis of a fixable error. Do not expand scope or claim success without evidence. Output: respond with JSON {"summary":"...","artifacts":[{"name":"report.json","path":"evidence/report.json","mime":"application/json"}]}. Artifacts must be real files under this workspace, not claimed executions. Return a limitation only for an actual unmet external dependency or unresolved verified defect. Never claim independent acceptance.`;
     const receipt = await rpc('session/prompt', {
       sessionId: params.runId,
-      contentBlocks: [{ type: 'text', text: prompt + runtimeArtifactInstruction + deliveryManifestInstruction + (repairSnapshot ? repairFinalizationInstruction : '') }],
+      contentBlocks: [{ type: 'text', text: prompt + runtimeHandoffInstruction + runtimeArtifactInstruction + deliveryManifestInstruction + (repairSnapshot ? repairFinalizationInstruction : '') }],
     });
     receiptId = receipt.messageId;
     if (guidanceIdentity) {
@@ -658,6 +597,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     };
   } catch (e) {
     await stop();
+    await checkpointHandoff();
     const termination = await inspectUnitExit(unit);
     if (termination) emit('RUNTIME_TERMINATION', {...termination,workspace:params.workspace,
       ...(params.runFence ? {runFence:params.runFence} : {})});

@@ -9,7 +9,7 @@ import { installTaskInstructions } from './task-instructions.js';
 import { installRuntimeLookupIndexes } from './runtime-lookup-indexes.js';
 export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
-  max: config.pgPoolMax,
+  max: 15,
   connectionTimeoutMillis: 10000,
 });
 export type DB = Pick<PoolClient, 'query'>;
@@ -47,7 +47,7 @@ export async function migrate() {
     await lock(db);
     await db.query(`
 CREATE TABLE IF NOT EXISTS settings (id text PRIMARY KEY, value jsonb NOT NULL);
-INSERT INTO settings VALUES('capacity','{"maxRuns":${config.capacityMaxRuns},"browserSlots":${config.browserSlots}}') ON CONFLICT DO NOTHING;
+INSERT INTO settings VALUES('capacity','{"maxRuns":4,"browserSlots":2}') ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS agents (
  id text PRIMARY KEY, name text NOT NULL, department text NOT NULL, reports_to text,
  capabilities jsonb NOT NULL, runtime text NOT NULL, version int NOT NULL DEFAULT 1,
@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS planning_runs (
  UNIQUE(objective_id,trigger_key));
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_planning ON planning_runs(objective_id) WHERE state IN('queued','running','waiting_quota');
 ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS usage JSONB;
+ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS progress JSONB;
+ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS recovery_counts JSONB NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS planning_attempts (
  planning_run_id uuid NOT NULL REFERENCES planning_runs(id), attempt int NOT NULL,
  output text, usage jsonb, error text, created_at timestamptz NOT NULL DEFAULT now(),
@@ -151,18 +153,11 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allowed_accounts jsonb NOT NULL DEFAU
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_role text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
--- A run's parent is its task, not another run: parent_run_id was never written
--- or read, and an unused column breaks the goalDetail read-model contract that
--- mirrors this table column for column.
-ALTER TABLE runs DROP COLUMN IF EXISTS parent_run_id;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_task_id uuid REFERENCES tasks(id);
--- Liveness of a long generation: a heartbeat proves the process is alive, this
--- proves the model is actually producing. Never holds generated content.
-ALTER TABLE planning_runs ADD COLUMN IF NOT EXISTS progress jsonb;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_role text;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_level int DEFAULT 0;
 CREATE TABLE IF NOT EXISTS recall_imports (source_id text PRIMARY KEY, version text NOT NULL, memory_id uuid REFERENCES memories(id), project text NOT NULL);
-INSERT INTO settings VALUES('remote-capacity','{"maxRuns":${config.remoteMaxRuns},"memoryMiB":${config.remoteMemoryMiB},"cpuPercent":${config.remoteCpuPercent}}') ON CONFLICT DO NOTHING;
+INSERT INTO settings VALUES('remote-capacity','{"maxRuns":2,"memoryMiB":3600,"cpuPercent":300}') ON CONFLICT DO NOTHING;
 `);
     await installWorkstreamPolicy(db);
     await installWorkforcePolicy(db);

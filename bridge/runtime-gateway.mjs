@@ -25,6 +25,8 @@ export function toGeneration(body, route) {
       });
     } else if (m.role === 'assistant') {
       const content = text ? [{ type: 'text', text }] : [];
+      if (typeof m.reasoning_content === 'string' && m.reasoning_content)
+        content.unshift({type:'thinking',thinking:m.reasoning_content});
       for (const t of m.tool_calls ?? [])
         content.push({
           type: 'toolCall',
@@ -62,7 +64,7 @@ export function toGeneration(body, route) {
       description: t.function.description,
       parameters: t.function.parameters,
     })),
-    maxOutputTokens: 8192,
+    maxOutputTokens: /^glm[-.]/i.test(route.model ?? '') ? 32768 : 8192,
   };
 }
 export function completion(message, model) {
@@ -78,7 +80,8 @@ export function completion(message, model) {
       type: 'function',
       function: { name: b.name, arguments: JSON.stringify(b.arguments) },
     }));
-  const delta = { role: 'assistant', content, ...(tool_calls.length ? { tool_calls } : {}) };
+  const reasoning = message.content.filter(b=>b.type==='thinking').map(b=>b.thinking).join('');
+  const delta = { role: 'assistant', content, ...(reasoning ? {reasoning_content:reasoning} : {}), ...(tool_calls.length ? { tool_calls } : {}) };
   const finish_reason = tool_calls.length
     ? 'tool_calls'
     : message.stopReason === 'length'

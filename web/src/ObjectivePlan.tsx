@@ -30,9 +30,9 @@ function PlanningActivity({ run }: { run: Row }) {
       </p>
       <p>
         {progress
-          ? `${progress.characters.toLocaleString('pt-BR')} caracteres recebidos do modelo em ${progress.chunks} blocos` +
+          ? `${Number(progress.characters ?? 0).toLocaleString('pt-BR')} caracteres de resposta · ${Number(progress.reasoningCharacters ?? 0).toLocaleString('pt-BR')} de processamento · ${Number(progress.chunks ?? 0)} blocos` +
             (sinceProgress !== null ? ` · último há ${sinceProgress}s` : '')
-          : 'Aguardando o primeiro bloco do modelo. Este provedor leva dezenas de segundos até começar a emitir.'}
+          : 'Aguardando o primeiro bloco do modelo.'}
       </p>
       <p className="goal-notice">
         {stalled

@@ -113,6 +113,18 @@ export function validatePlan(
     return all;
   }
   const ancestry = new Map(plan.tasks.map((t) => [t.key, ancestors(t.key)]));
+  // Delegation is distinct from dependency order, but must also be a forest.
+  for (const task of plan.tasks) {
+    const seen = new Set([task.key]);
+    let parent = task.parentKey;
+    while (parent) {
+      if (seen.has(parent)) fail('Hierarquia de delegação circular.');
+      seen.add(parent);
+      const node = byKey.get(parent);
+      if (!node) fail('Pai de delegação inexistente: '+parent);
+      parent = node!.parentKey;
+    }
+  }
   for (const t of plan.tasks) {
     if (/^base-\d+$/.test(t.key)) fail('Chave de tarefa reservada para o snapshot da base.');
     if (!request.workspaces.includes(t.baseWorkspace))

@@ -5,8 +5,8 @@ import { seedRegistry } from '../server/registry.js';
 import { config } from '../server/config.js';
 import { accountBridge } from '../server/bridge.js';
 import { objectiveSchema,validatePlan } from '../server/objective-contracts.js';
-import { compileDelivery,incrementalEligible,verifiedBatch } from '../server/incremental-planning.js';
-import { submitObjective,claimPlanning,applyPlannedResult,reconcilePlanning,PlanningEngine } from '../server/planner.js';
+import { compileDelivery,bindDeliveryFeedback,incrementalEligible,verifiedBatch } from '../server/incremental-planning.js';
+import { submitObjective,feedbackObjective,claimPlanning,applyPlannedResult,reconcilePlanning,PlanningEngine } from '../server/planner.js';
 import { refreshGoal } from '../server/service.js';
 
 const request = () => objectiveSchema.parse({message:'Corrigir dois defeitos independentes e verificar a candidata acumulada.',project:'test',
@@ -63,6 +63,71 @@ it('queues exactly one successor across repeated/concurrent reconciliation and c
   expect(queued[0].feedback.sourceOverrides['test/base']).toContain('r1-deliver');
   expect((await pool.query('SELECT count(*) FROM tasks WHERE goal_id=$1',[objectiveId])).rows[0].count).toBe('2');
 });
+it('prioritizes new counterexamples over advancement and preserves the accumulated candidate',async()=>{
+  const {objectiveId,input,plan}=await start();await acceptBatch(objectiveId,1);
+  const report='Counterexample: 2026-02-30T12:00:00Z is not a valid calendar date; accepted must be 0.';
+  await feedbackObjective(objectiveId,'external-calendar-case',report);
+  await Promise.all(Array.from({length:4},()=>reconcilePlanning()));
+  const queued=(await pool.query("SELECT * FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rows;
+  expect(queued).toHaveLength(1);expect(queued[0].trigger_key).toMatch(/^feedback:/);
+  expect(queued[0].feedback.incrementalAdvance).toBeUndefined();
+  expect(queued[0].feedback.sourceOverrides['test/base']).toContain('r1-deliver');
+  expect(queued[0].feedback.artifacts).toHaveLength(1);
+  const run=await claimPlanning();
+  // A failed feedback planner has not addressed the evidence. It must not let
+  // the old accepted lot silently advance while awaiting its own recovery.
+  await pool.query("UPDATE planning_runs SET state='failed' WHERE id=$1",[run.id]);
+  await reconcilePlanning();
+  expect((await pool.query("SELECT 1 FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rowCount).toBe(0);
+  await pool.query("UPDATE planning_runs SET state='running' WHERE id=$1",[run.id]);
+  await expect(applyPlannedResult(run,compileDelivery(decision(),input,plan))).rejects.toMatchObject({code:'REQUIRED_CONTEXT'});
+  const repaired=compileDelivery(decision(),input,plan,false,run.feedback.reports);
+  expect(repaired.incremental?.completedRequirementIds).toEqual([]);
+  for(const task of repaired.tasks)expect(task.description).toContain(report);
+  expect(bindDeliveryFeedback(repaired,run.feedback.reports)).toEqual(repaired);
+  await applyPlannedResult(run,repaired);
+  expect((await pool.query('SELECT count(*) FROM acceptances WHERE passed=true')).rows[0].count).toBe('2');
+});
+it('leaves active and uncertain attempts unchanged while feedback waits for a safe boundary',async()=>{
+  const {objectiveId}=await start();
+  const task=(await pool.query("SELECT id FROM tasks WHERE goal_id=$1 AND stage='work'",[objectiveId])).rows[0];
+  const runId=randomUUID(),fence=randomUUID();
+  await pool.query("INSERT INTO runs(id,task_id,attempt,state,fence,runtime,agent_version) VALUES($1,$2,1,'running',$3,'harness',1)",[runId,task.id,fence]);
+  await pool.query("UPDATE tasks SET state='running',attempt_count=1 WHERE id=$1",[task.id]);
+  await feedbackObjective(objectiveId,'live-counterexample','Reproduce the externally reported invalid-date case before accepting.');
+  for(const state of ['running','reconciling']){
+    await pool.query('UPDATE runs SET state=$2 WHERE id=$1',[runId,state]);
+    await reconcilePlanning();
+    expect((await pool.query('SELECT state,fence FROM runs WHERE id=$1',[runId])).rows[0]).toEqual({state,fence});
+    expect((await pool.query("SELECT 1 FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rowCount).toBe(0);
+  }
+});
+it('cannot complete with unconsumed feedback and reopens a completed objective without erasing evidence',async()=>{
+  const {objectiveId,input,plan}=await start();await acceptBatch(objectiveId,1);await reconcilePlanning();
+  const run=await claimPlanning();await applyPlannedResult(run,compileDelivery(decision('req-2'),input,plan,true));
+  await acceptBatch(objectiveId,2);
+  await feedbackObjective(objectiveId,'before-completion','A concrete regression remains in a prior requirement. Reproduce and repair it.');
+  await tx(async db=>{await lock(db);await refreshGoal(db,objectiveId);});
+  expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('active');
+  await reconcilePlanning();const repair=await claimPlanning();
+  for(const state of ['queued','running','waiting_quota','failed']){
+    await pool.query('UPDATE planning_runs SET state=$2 WHERE id=$1',[repair.id,state]);
+    await tx(async db=>{await lock(db);await refreshGoal(db,objectiveId);});
+    expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).not.toBe('completed');
+  }
+  await pool.query("UPDATE planning_runs SET state='running' WHERE id=$1",[repair.id]);
+  const latest=(await pool.query('SELECT plan FROM plan_revisions WHERE objective_id=$1 ORDER BY revision DESC LIMIT 1',[objectiveId])).rows[0].plan;
+  await applyPlannedResult(repair,compileDelivery(decision('req-2'),input,latest,false,repair.feedback.reports));
+  await acceptBatch(objectiveId,3);
+  await tx(async db=>{await lock(db);await refreshGoal(db,objectiveId);});
+  expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('completed');
+  await feedbackObjective(objectiveId,'after-completion','A new external counterexample invalidates the earlier passing report.');
+  expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('active');
+  expect((await pool.query('SELECT count(*) FROM acceptances WHERE passed=true')).rows[0].count).toBe('6');
+});
+it('fails visibly instead of silently truncating feedback beyond the existing task context limit',()=>{
+  expect(()=>compileDelivery(decision(),request(),undefined,false,['x'.repeat(21000)])).toThrowError(expect.objectContaining({code:'REQUIRED_CONTEXT'}));
+});
 it('will not advance from a model claim without acceptance or from missing candidate evidence',async()=>{
   const {objectiveId}=await start();
   await pool.query("UPDATE tasks SET state='accepted' WHERE goal_id=$1",[objectiveId]);
@@ -103,7 +168,7 @@ it('recovers a confirmed timeout with the small contract and reuses persisted ou
     if(method==='memory.search')return {items:[]};
     if(method==='worker.workspaces')return [{id:'test/base'}];
     if(method==='generate'){
-      expect(p.maxOutputTokens).toBe(2200);expect(JSON.parse(p.messages[0].content)).not.toHaveProperty('previousPlan');
+      expect(p.maxOutputTokens).toBe(8192);expect(JSON.parse(p.messages[0].content)).not.toHaveProperty('previousPlan');
       if(++generated===1)throw Object.assign(Error('confirmed'),{code:'PROVIDER_TIMEOUT'});
       return {message:{content:[{type:'text',text:JSON.stringify(decision())}]}};
     }
@@ -130,4 +195,40 @@ it('does not dispatch a truncated JSON fragment or retry an uncertain terminatio
 it('honors paused goals between lots',async()=>{
   const {objectiveId}=await start();await acceptBatch(objectiveId,1);await pool.query("UPDATE goals SET state='paused' WHERE id=$1",[objectiveId]);
   await reconcilePlanning();expect(await claimPlanning()).toBeNull();
+});
+
+it('repairs the first invalid agent after nineteen transport failures without consuming semantic retries',async()=>{
+  let generated=0;
+  vi.spyOn(accountBridge,'request').mockImplementation(async(method,p:any)=>{
+    if(method==='memory.search')return {items:[]};if(method==='worker.workspaces')return [{id:'test/base'}];
+    if(method==='worker.prepare')return {};
+    if(method==='generate'){
+      const schema=JSON.parse(p.messages[0].content).schema;
+      expect(schema.properties.agentId.enum).toContain('engineering.backend.node');
+      expect(schema.properties.agentId.enum).not.toContain('engineering.backend.nodejs');
+      return {message:{content:[{type:'text',text:JSON.stringify({...decision(),agentId:++generated===1?'engineering.backend.nodejs':'engineering.backend.node'})}]}};
+    }
+    throw Error('ranking fallback');
+  });
+  await submitObjective(request());
+  await pool.query(`UPDATE planning_runs SET attempt=19,recovery_counts='{"transient":19}'`);
+  const engine=new PlanningEngine();await engine.execute(await claimPlanning(),new AbortController().signal);
+  const repaired=(await pool.query('SELECT * FROM planning_runs')).rows[0];
+  expect(repaired.state).toBe('queued');expect(repaired.recovery_counts).toEqual({transient:19,invalid_plan:1});
+  await pool.query('UPDATE planning_runs SET next_attempt_at=now()');
+  await engine.execute(await claimPlanning(),new AbortController().signal);
+  expect((await pool.query('SELECT count(*) FROM tasks')).rows[0].count).toBe('2');
+});
+
+it('persists a child before its parent atomically and rejects cyclic or absent parents',async()=>{
+  const input=request();await submitObjective(input);const run=await claimPlanning();
+  const plan=compileDelivery(decision(),input);plan.tasks[0].parentKey='verify';
+  const agents=(await pool.query('SELECT * FROM agents')).rows;
+  const missing=structuredClone(plan);missing.tasks[0].parentKey='unknown';
+  expect(()=>validatePlan(missing,input,agents,[])).toThrow();
+  const cyclic=structuredClone(plan);cyclic.tasks[1].parentKey='deliver';
+  expect(()=>validatePlan(cyclic,input,agents,[])).toThrow();
+  await applyPlannedResult(run,plan);
+  const rows=(await pool.query('SELECT id,key,parent_task_id FROM tasks')).rows;
+  expect(rows.find(t=>t.key.endsWith('-deliver')).parent_task_id).toBe(rows.find(t=>t.key.endsWith('-verify')).id);
 });

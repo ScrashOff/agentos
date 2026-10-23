@@ -1,4 +1,4 @@
-// OpenAI-compatible transport used when the pinned harness SDK is absent.
+// Inspected OpenAI-compatible transport selected for the verified GLM route.
 // Message shapes mirror bridge/runtime-gateway.mjs, which converts the same
 // wire format in the opposite direction; the two must stay symmetric.
 // Only typed availability evidence leaves this module: an upstream body never
@@ -9,6 +9,8 @@ export const RETRY_ATTEMPTS = 3;
 export const RETRY_BUDGET_MS = 30000;
 const MAX_DELAY_MS = 15000;
 export const PROGRESS_INTERVAL_MS = 3000;
+const failure = (code) => Object.assign(Error(code), {code});
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 const textOf = (content) =>
   typeof content === 'string'
@@ -30,6 +32,9 @@ export function toCompletionsMessages(systemPrompt, messages) {
       out.push({
         role: 'assistant',
         content: text || null,
+        ...((m.content ?? []).some?.(b => b.type === 'thinking') ? {
+          reasoning_content: m.content.filter(b => b.type === 'thinking').map(b => b.thinking).join(''),
+        } : {}),
         ...(calls.length
           ? {
               tool_calls: calls.map((c) => ({
@@ -52,6 +57,7 @@ export function fromCompletionsResponse(data) {
   const choice = data?.choices?.[0];
   return buildMessage({
     text: choice?.message?.content ?? '',
+    thinking: choice?.message?.reasoning_content ?? '',
     calls: (choice?.message?.tool_calls ?? []).map((c, index) => ({
       index, id: c.id, name: c.function?.name, arguments: c.function?.arguments,
     })),
@@ -60,12 +66,24 @@ export function fromCompletionsResponse(data) {
   });
 }
 
-function buildMessage({ text, calls, finish, usage }) {
+function buildMessage({ text, thinking = '', calls, finish, usage }) {
+  // No partial response may reach a tool executor. A transport EOF is not a
+  // provider terminal marker; length also takes precedence over tool calls.
+  if (finish === 'length') throw failure('MODEL_OUTPUT_LIMIT');
+  if (!['stop','tool_calls'].includes(finish)) throw failure('MODEL_INCOMPLETE_RESPONSE');
+  if ((finish === 'tool_calls') !== (calls.length > 0)) throw failure('MODEL_INCOMPLETE_RESPONSE');
+  if (!calls.length && !text) throw failure('MISSING_MODEL_RESPONSE');
   const content = [];
+  if (thinking) content.push({type:'thinking',thinking});
   if (text) content.push({ type: 'text', text: String(text) });
+  const ids = new Set();
   for (const call of calls) {
-    let args = {};
-    try { args = JSON.parse(call.arguments || '{}'); } catch {}
+    if (typeof call.id !== 'string' || !call.id || ids.has(call.id) ||
+        typeof call.name !== 'string' || !call.name) throw failure('MODEL_INCOMPLETE_RESPONSE');
+    ids.add(call.id);
+    let args;
+    try { args = JSON.parse(call.arguments); } catch { throw failure('MODEL_INCOMPLETE_RESPONSE'); }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw failure('MODEL_INCOMPLETE_RESPONSE');
     content.push({ type: 'toolCall', id: call.id, name: call.name, arguments: args });
   }
   return {
@@ -75,7 +93,8 @@ function buildMessage({ text, calls, finish, usage }) {
       ? 'toolUse'
       : finish === 'length' ? 'length' : 'stop',
     usage: usage
-      ? { input: usage.prompt_tokens ?? 0, output: usage.completion_tokens ?? 0,
+      ? { input: Math.max(0,(usage.prompt_tokens ?? 0)-(usage.prompt_tokens_details?.cached_tokens ?? 0)), output: usage.completion_tokens ?? 0,
+          cacheRead: usage.prompt_tokens_details?.cached_tokens ?? 0,
           totalTokens: usage.total_tokens ?? 0 }
       : null,
   };
@@ -89,10 +108,12 @@ export async function readCompletionsStream(body, signal, onProgress, now = () =
   const startedAt = now();
   let chunks = 0, reportedAt = 0;
   const calls = new Map();
-  let buffer = '', text = '', finish, usage;
+  let buffer = '', text = '', thinking = '', finish, usage, bytes = 0, done = false;
   for await (const part of body) {
     if (signal?.aborted) throw cancelled();
     chunks++;
+    bytes += part.byteLength;
+    if (bytes > MAX_RESPONSE_BYTES) throw failure('MODEL_RESPONSE_TOO_LARGE');
     buffer += decoder.decode(part, { stream: true });
     let cut;
     while ((cut = buffer.indexOf('\n')) !== -1) {
@@ -100,14 +121,17 @@ export async function readCompletionsStream(body, signal, onProgress, now = () =
       buffer = buffer.slice(cut + 1);
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trim();
-      if (payload === '[DONE]') continue;
+      if (payload === '[DONE]') { done = true; continue; }
+      if (done) throw failure('MODEL_INCOMPLETE_RESPONSE');
       let event;
-      try { event = JSON.parse(payload); } catch { continue; }
+      try { event = JSON.parse(payload); } catch { throw failure('MODEL_INCOMPLETE_RESPONSE'); }
+      if (event.error) throw failure('MODEL_REQUEST_FAILED');
       if (event.usage) usage = event.usage;
       const choice = event.choices?.[0];
       if (!choice) continue;
       if (choice.finish_reason) finish = choice.finish_reason;
       const delta = choice.delta ?? {};
+      if (typeof delta.reasoning_content === 'string') thinking += delta.reasoning_content;
       if (typeof delta.content === 'string') text += delta.content;
       for (const call of delta.tool_calls ?? []) {
         // Deltas carry the id and name once and then append arguments.
@@ -122,11 +146,15 @@ export async function readCompletionsStream(body, signal, onProgress, now = () =
     // Throttled: a few tokens per second would otherwise write continuously.
     if (onProgress && now() - reportedAt >= PROGRESS_INTERVAL_MS) {
       reportedAt = now();
-      onProgress({ characters: text.length, chunks, elapsedMs: now() - startedAt });
+      onProgress({ characters: text.length, reasoningCharacters: thinking.length,
+        toolCharacters: [...calls.values()].reduce((n,c)=>n+c.arguments.length,0), chunks, elapsedMs: now() - startedAt });
     }
   }
-  onProgress?.({ characters: text.length, chunks, elapsedMs: now() - startedAt, done: true });
-  return buildMessage({ text, calls: [...calls.values()].sort((a, b) => a.index - b.index), finish, usage });
+  if (signal?.aborted) throw cancelled();
+  if (buffer.trim()) throw failure('MODEL_INCOMPLETE_RESPONSE');
+  const message = buildMessage({ text, thinking, calls: [...calls.values()].sort((a, b) => a.index - b.index), finish, usage });
+  onProgress?.({ characters: text.length, reasoningCharacters: thinking.length, chunks, elapsedMs: now() - startedAt, done: true });
+  return message;
 }
 
 function typedFailure(failure) {
@@ -175,14 +203,17 @@ export function openAICompletionsFallback({ fetch: fetchImpl = fetch, random = M
           model: model.id,
           messages: toCompletionsMessages(systemPrompt, messages),
           stream: true,
-          // Without this a streamed call reports no usage at all, leaving the
-          // run with no token accounting and no way to detect truncation.
-          stream_options: { include_usage: true },
+          stream_options: {include_usage:true},
           max_tokens: options.maxTokens ?? model.maxTokens ?? 4096,
+          ...(model.compat?.thinkingFormat === 'zai' ? {
+            thinking:{type:'enabled',clear_thinking:false},
+            reasoning_effort:model.thinkingLevelMap?.[options.reasoning ?? 'low'] ?? 'low',
+          } : {}),
           ...(tools?.length ? { tools: tools.map((t) => ({ type: 'function', function: t })) } : {}),
         };
         const request = {
           method: 'POST',
+          redirect: 'error',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${options.apiKey}` },
           body: JSON.stringify(body),
           signal: options.signal,
@@ -195,27 +226,47 @@ export function openAICompletionsFallback({ fetch: fetchImpl = fetch, random = M
           try {
             response = await fetchImpl(url, request);
           } catch (error) {
-            if (last || options.signal?.aborted) throw error;
+            if (options.signal?.aborted) throw cancelled();
+            if (last) throw failure('MODEL_REQUEST_FAILED');
             const delay = backoffDelay(attempt, null, random);
-            if (Date.now() + delay > deadline) throw error;
+            if (Date.now() + delay > deadline) throw failure('MODEL_REQUEST_FAILED');
+            options.onRetry?.({attempt:attempt+1,code:'MODEL_REQUEST_FAILED',delayMs:delay});
             await wait(delay, options.signal);
             continue;
           }
           if (response.ok) {
-            return /event-stream/i.test(response.headers.get('content-type') ?? '')
-              ? await readCompletionsStream(response.body, options.signal, options.onProgress)
-              : fromCompletionsResponse(await response.json());
+            try {
+              return /event-stream/i.test(response.headers.get('content-type') ?? '')
+                ? await readCompletionsStream(response.body, options.signal, options.onProgress)
+                : fromCompletionsResponse(await response.json());
+            } catch (error) {
+              if (options.signal?.aborted) throw cancelled();
+              const code = ['MODEL_OUTPUT_LIMIT','MODEL_RESPONSE_TOO_LARGE','MISSING_MODEL_RESPONSE',
+                'MODEL_INCOMPLETE_RESPONSE'].includes(error.code) ? error.code : 'MODEL_INCOMPLETE_RESPONSE';
+              const delay = backoffDelay(attempt,null,random);
+              if (last || code === 'MODEL_OUTPUT_LIMIT' || code === 'MODEL_RESPONSE_TOO_LARGE' || Date.now()+delay>deadline)
+                throw failure(code);
+              options.onRetry?.({attempt:attempt+1,code,delayMs:delay});
+              await wait(delay,options.signal);
+              continue;
+            }
           }
-          const failure = await classifyProviderError(response);
+          const providerFailure = await classifyProviderError(response);
           // Quota and authentication are states of the account, not transient
           // congestion: retrying them wastes a permit and hides the real cause.
-          const retryable = failure.code === 'RATE_LIMIT' || failure.status >= 500;
-          if (!retryable || last) throw typedFailure(failure);
-          const delay = backoffDelay(attempt, failure.retryAfterSeconds, random);
-          if (Date.now() + delay > deadline) throw typedFailure(failure);
+          const retryable = providerFailure.code === 'RATE_LIMIT' || providerFailure.status >= 500;
+          if (!retryable || last) throw typedFailure(providerFailure);
+          const delay = backoffDelay(attempt, providerFailure.retryAfterSeconds, random);
+          if (Date.now() + delay > deadline) throw typedFailure(providerFailure);
+          options.onRetry?.({attempt:attempt+1,code:providerFailure.code,status:providerFailure.status,delayMs:delay});
           await wait(delay, options.signal);
         }
-      })();
+      })().catch(error => {
+        options.onFailure?.({code: /^[A-Z_]{3,60}$/.test(error.code ?? '') ? error.code : 'MODEL_REQUEST_FAILED',
+          ...(Number.isInteger(error.status) ? {status:error.status} : {}),
+          ...(Number.isSafeInteger(error.retryAfterSeconds) ? {retryAfterSeconds:error.retryAfterSeconds} : {})});
+        throw error;
+      });
       return { result: () => resultPromise };
     },
   };
