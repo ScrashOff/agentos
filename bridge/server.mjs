@@ -38,6 +38,13 @@ const DATA = (() => {
 
 let providers = {};
 let openAICompletionsApi = null;
+// The SDK's api-level entry points accept a TranscriptContext, which carries
+// the prompt and the tool declarations inside a leading system message. Only
+// normalizeContext() folds Context.systemPrompt and Context.tools into one, so
+// an api-level call made without it silently drops both: the model then never
+// sees a tool and answers in prose, which the delivery contract rejects.
+// The fallback implements the Context shape itself, so it must not be folded.
+let normalizeContext = null;
 let yaml = { parse: () => ({}) };
 
 if (existsSync(DSH)) {
@@ -48,7 +55,10 @@ if (existsSync(DSH)) {
     const { anthropicProvider } = await import(pi + 'providers/anthropic.js');
     const { kimiCodingProvider } = await import(pi + 'providers/kimi-coding.js');
     const { openAICompletionsApi: oai } = await import(pi + 'api/openai-completions.lazy.js');
+    const { normalizeContext: fold } = await import(pi + 'utils/transcript.js');
+    if (typeof fold !== 'function') throw Error('TRANSCRIPT_NORMALIZER_MISSING');
     openAICompletionsApi = oai;
+    normalizeContext = fold;
     providers = {
       codex: openaiCodexProvider(),
       claude: anthropicProvider(),
@@ -468,9 +478,19 @@ async function generate(params, signal, emit, admission) {
     params,
     signal,
     async (requestSignal) => {
+      // Every SDK entry point, provider- and api-level alike, is typed for a
+      // TranscriptContext and reads the prompt and tools from the transcript.
+      // normalizeContext is set only when the SDK loaded, and the bundled
+      // fallback is the sole consumer of the raw Context shape, so folding
+      // here covers both without a per-provider flag.
+      const context = {
+        systemPrompt: params.system ?? '',
+        messages: params.messages,
+        tools: params.tools ?? [],
+      };
       const stream = provider.streamSimple(
         model,
-        { systemPrompt: params.system ?? '', messages: params.messages, tools: params.tools ?? [] },
+        normalizeContext ? normalizeContext(context) : context,
         {
           ...auth,
           signal: requestSignal,

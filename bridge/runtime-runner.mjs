@@ -9,11 +9,11 @@ import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile, realpath, stat, readdir } from 'node:fs/promises';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { GLM_ACCOUNT, GLM_REQUEST_ADMITTED, withAccountRequestGate } from './gated-generation.mjs';
+import { GLM_REQUEST_ADMITTED, glmRequestBudgetMs, inGlmRequestLane, withAccountRequestGate } from './gated-generation.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { toGeneration, completion } from './runtime-gateway.mjs';
+import { toGeneration, completion, fromMessages, messagesEvents, messagesError } from './runtime-gateway.mjs';
 import { workspaceOperation } from './workspaces.mjs';
 import { materializeSourceInputs } from './source-inputs.mjs';
 import {hydrateArtifactInputBundle,referencedInputLimitBytes} from './artifact-input-bundle.mjs';
@@ -173,13 +173,24 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
   const gateway = createServer(async (req, res) => {
     const controller = new AbortController();
     // GLM waits for a host-wide permit before its provider timeout starts.
-    const gatedRequest = params.accountId === GLM_ACCOUNT;
+    // The same lane the gate itself recognizes, by account or by GLM model:
+    // deciding it differently here spent a permit while a fixed deadline ran
+    // over the queue wait, which is the one thing a permit must cover.
+    const gatedRequest = inGlmRequestLane({ accountId: params.accountId, model: params.model });
+    let heartbeat = null;
     const requestTimeout = gatedRequest ? null : AbortSignal.timeout(300000);
     const abort = () => controller.abort();
     signal.addEventListener('abort', abort, { once: true });
     res.on('close', abort);
     try {
-      if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+      // The pinned runtime speaks Messages; older adapters speak completions.
+      const wire =
+        req.url === '/v1/messages'
+          ? 'messages'
+          : req.url === '/v1/chat/completions'
+            ? 'completions'
+            : null;
+      if (req.method !== 'POST' || !wire) {
         res.writeHead(404);
         res.end();
         return;
@@ -208,7 +219,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
           }
         }
       }
-      const input = toGeneration(JSON.parse(body), {
+      const input = (wire === 'messages' ? fromMessages : toGeneration)(JSON.parse(body), {
         accountId: params.accountId,
         model: params.model,
         reasoning: 'high',
@@ -220,11 +231,23 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         accountId: params.accountId,
         model: params.model,
       });
+      // The Messages adapter arms its idle watchdog before the request, so the
+      // stream opens now and keeps pulsing while the gated call waits for its
+      // permit and its answer. Comments carry no events to the agent loop.
+      if (wire === 'messages') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(': open\n\n');
+        heartbeat = setInterval(() => {
+          if (!res.writableEnded) res.write(': keep-alive\n\n');
+        }, 15000);
+      }
       // Own admission here as well: an older long-lived bridge can load this
       // runtime while retaining its original ungated generate callback. Newer
       // bridges recognize the private symbol and do not acquire twice.
       const result = await withAccountRequestGate(
-        gatedRequest ? { ...input, runId: params.runId, requestTimeoutMs: 300000 } : input,
+        gatedRequest
+          ? { ...input, runId: params.runId, requestTimeoutMs: glmRequestBudgetMs() }
+          : input,
         requestTimeout ? AbortSignal.any([controller.signal, requestTimeout]) : controller.signal,
         (requestSignal) => generate(input, requestSignal, GLM_REQUEST_ADMITTED),
         emit,
@@ -236,10 +259,16 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         stopReason: result.message.stopReason,
         tokens: result.message.usage?.totalTokens ?? null,
       });
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      for (const frame of completion(result.message, params.model))
-        res.write('data: ' + JSON.stringify(frame) + '\n\n');
-      res.end('data: [DONE]\n\n');
+      if (wire === 'messages') {
+        for (const event of messagesEvents(result.message, params.model))
+          res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
+        res.end();
+      } else {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        for (const frame of completion(result.message, params.model))
+          res.write('data: ' + JSON.stringify(frame) + '\n\n');
+        res.end('data: [DONE]\n\n');
+      }
     } catch (e) {
       gatewayError =
         (requestTimeout?.aborted || e.name === 'TimeoutError') && !controller.signal.aborted
@@ -250,11 +279,18 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
               ? 'AUTH_REQUIRED'
               : (e.code ?? 'MODEL_REQUEST_FAILED');
       emit('MODEL_ERROR', { code: gatewayError });
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: gatewayError, type: 'agentos_gateway' } }));
+      if (res.headersSent) {
+        const failure = messagesError(gatewayError);
+        res.write('event: error\ndata: ' + JSON.stringify(failure) + '\n\n');
+        res.end();
+      } else {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: gatewayError, type: 'agentos_gateway' } }));
+      }
       // A broken provider call must not leave an apparently running, idle agent loop.
       fail(error(gatewayError));
     } finally {
+      if (heartbeat) clearInterval(heartbeat);
       signal.removeEventListener('abort', abort);
     }
   });

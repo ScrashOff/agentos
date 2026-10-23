@@ -12,6 +12,14 @@ export const GLM_ACCOUNT =
 export function inGlmRequestLane({ accountId, model }) {
   return accountId === GLM_ACCOUNT || /^glm[-.]/i.test(model ?? '');
 }
+/** Measured throughput varies by router, so the budget is configured, not
+ * assumed. server/generation-timing.ts applies these same bounds and default
+ * to the planner lane; a slower endpoint needs a larger budget, not a call cut
+ * short with nothing to show for it. */
+export function glmRequestBudgetMs() {
+  const budget = Number(process.env.AGENTOS_GLM_REQUEST_TIMEOUT_MS);
+  return Number.isSafeInteger(budget) && budget >= 60000 && budget <= 3600000 ? budget : 720000;
+}
 // Private in-process evidence that a caller already owns the permit. JSON/RPC
 // callers cannot supply this identity, so they cannot bypass admission.
 export const GLM_REQUEST_ADMITTED = Symbol('agentos.glm.request.admitted');
