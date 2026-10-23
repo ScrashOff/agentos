@@ -180,7 +180,9 @@ export function fromMessages(body, route) {
       description: t.description,
       parameters: t.input_schema,
     })),
-    maxOutputTokens: 8192,
+    // Same budget as the completions wire: GLM spends output tokens on
+    // reasoning, so the smaller ceiling truncates the answer, not the thinking.
+    maxOutputTokens: /^glm[-.]/i.test(route.model ?? '') ? 32768 : 8192,
   };
 }
 export function messagesEvents(message, model) {

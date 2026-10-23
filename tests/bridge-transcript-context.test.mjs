@@ -63,6 +63,16 @@ test('the bundled fallback still receives the raw Context shape',()=>{
  assert.deepEqual(seen.context.tools,[tool]);
 });
 
+test('the bundled transport is not folded while the SDK is installed',()=>{
+ // The GLM reasoning route selects the bundled transport even with the SDK
+ // present, so normalizeContext exists. The target decides, not its presence.
+ const {seen,provider}=capture();
+ provider.acceptsRawContext=true;
+ invoke(provider,params,normalizeContext);
+ assert.equal(seen.context.systemPrompt,'Use as ferramentas disponiveis.');
+ assert.deepEqual(seen.context.tools,[tool]);
+});
+
 test('an empty prompt and no tools leave the transcript untouched',()=>{
  const {seen,provider}=capture();
  invoke(provider,{messages:[{role:"user",content:"oi",timestamp:0}]},normalizeContext);
