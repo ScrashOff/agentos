@@ -1,0 +1,57 @@
+Verified objective inputs
+
+An authenticated operator can register small original files as immutable input
+evidence for specified objective requirements. The server accepts supplied bytes;
+it never opens sourceRef as a host path or treats file content as authorization.
+
+POST /api/objectives/<objective-uuid>/inputs
+Use the application's existing authenticated operator session or API bearer token.
+Keep authentication outside files, prompts and shell command arguments.
+
+Request fields:
+  requestId: a new UUID, reused unchanged when reconciling the same request
+  expectedRevision: current objective revision
+  name: safe basename, for example acceptance.mjs
+  digest: SHA-256 of the exact original bytes, lowercase hexadecimal
+  base64: canonical base64 of those bytes
+  requirementIds: existing requirement IDs that consume this evidence
+  sourceRef: inert provenance label; never a server-side file-fetch instruction
+  reason: why this original input is needed
+  requestReplan: true by default; false registers for future plans only
+
+Limits: 64 KiB decoded per file and twenty registered inputs per objective.
+Credential material and credential filenames are rejected. The response contains
+metadata and a receipt digest, not the file contents.
+
+The registration transaction records the immutable bytes and their provenance
+event. With requestReplan=true it also queues canonical objective feedback.
+Repeated requests with identical identity and content return the original receipt;
+different content under the same requestId is rejected. A stale initial revision,
+cancelled objective, unknown requirement or invalid hash is rejected.
+
+When a future plan is applied, the controller verifies the input records and
+receipt events and injects matching inputs into work, integration and independent
+QA tasks by their requirement coverage. Existing execution-input manifests,
+instruction snapshots and bridge transport bind the bytes to each new attempt.
+The runtime provides inputs read-only under /home/agent/inputs/<input-id>/<name>.
+
+An already-created task or live attempt is never retroactively modified. If an
+input arrives while an actor is running, normal reconciliation preserves that
+actor and applies the input at a subsequent plan boundary. requestReplan=false
+does not make the input appear in an existing blocked QA task.
+
+The store uses an immutable objective_inputs table with an idempotent installation
+transaction on the first authenticated registration. Normal planning does not
+create the table. Registration serializes with admission and planning; installation
+uses its own advisory lock outside admission's global lock.
+
+Operator registration is an intervention. It is not proof that a supervisor can
+discover and recover missing inputs without operator help. Automatic input
+requests, authorized origin resolvers, broader recovery and long-run autonomy
+remain separate qualification work. Acceptance criteria are never changed by
+registration, and correct input bytes do not imply that the candidate passes.
+
+Validation: tests/objective-inputs.test.ts covers real PostgreSQL transitions,
+concurrent idempotency, stale requests, live snapshot preservation, immutable
+receipts, scoped propagation, independent QA transport and authenticated HTTP.
+Run in the dedicated server test database, never against an operational queue.

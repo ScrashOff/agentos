@@ -17,6 +17,7 @@ import {
 } from './objective-contracts.js';
 import { planningContext } from './planning-context.js';
 import { incrementalEligible, deliveryFrontier, deliveryDecisionSchema, compileDelivery, bindDeliveryFeedback, queueNextDelivery, assertIncrementalAuthority } from './incremental-planning.js';
+import {readObjectiveInputs,inputsForRequirements} from './objective-inputs.js';
 
 export async function submitObjective(raw: unknown) {
   const request = objectiveSchema.parse(raw);
@@ -109,7 +110,7 @@ export async function objectiveDetail(id: string) {
   };
 }
 
-async function queueFeedback(
+export async function queueFeedback(
   db: DB,
   id: string,
   key: string,
@@ -520,10 +521,13 @@ export async function applyPlannedResult(run: any, plan: ProposedPlan) {
         );
       }
       const ids = new Map(plan.tasks.map((t) => [t.key, randomUUID()]));
+      const operatorInputs=await readObjectiveInputs(db,run.objective_id);
       for (const t of plan.tasks) {
+        const inputs=inputsForRequirements(operatorInputs,t.covers);
         const execution = {
           ...executionSpec(run.objective_id, revision, t, plan),
           revisionFeedback: run.feedback,
+          ...(inputs.length?{inputs}:{}),
         };
         const parentTaskId = t.parentKey ? ids.get(t.parentKey) : null;
         const agentRole = t.agentRole ?? (t.stage === 'verify' ? 'validator' : t.stage === 'integrate' ? 'coordinator' : t.dependencies.length > 2 ? 'specialist' : 'worker');

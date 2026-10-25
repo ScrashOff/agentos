@@ -12,6 +12,8 @@ O [planejamento incremental](docs/INCREMENTAL-DELIVERY.txt) permite executar um 
 
 O [plano da próxima etapa](docs/CONTINUOUS-DELIVERY-PLAN.txt) prioriza insumos verificáveis, recuperação por causa e avanço medido por entregas aceitas. Mudanças disponíveis e trabalho proposto estão separados; código e testes aprovados não comprovam aplicação no runtime ou autonomia de 24 horas.
 
+O [registro de insumos por objetivo](docs/OBJECTIVE-INPUTS.txt) recebe bytes originais de um operador autenticado, verifica integridade e proveniência e os transporta para futuras tarefas e QA dos requisitos indicados. Tentativas já iniciadas e critérios permanecem preservados. O registro não busca arquivos arbitrários no host nem comprova recuperação sem intervenção.
+
 A publicação contém uma cópia sanitizada do código, com histórico novo. Credenciais, bancos, sessões, memórias privadas, relatórios operacionais, dados dos projetos e scripts específicos de operações não fazem parte deste repositório. Hosts e identificadores de instalação foram substituídos por exemplos.
 
 ## Componentes

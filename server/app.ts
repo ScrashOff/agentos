@@ -27,6 +27,7 @@ import { accountBridge } from './bridge.js';
 import { chatEngine, listChats, newChat, chatDetail } from './chat.js';
 import type { WorkerEngine } from './worker.js';
 import { submitObjective, objectiveDetail, feedbackObjective } from './planner.js';
+import {registerObjectiveInput} from './objective-inputs.js';
 import { cycleRoutes } from './cycles/routes.js';
 import { trustedTailnet } from './tailnet.js';
 import { panelState, panelGoal, panelTask, panelCollection } from './panel.js';
@@ -143,6 +144,11 @@ export function makeApp(engine?: WorkerEngine) {
   app.post('/api/goals', async (req) => createGoal(req.body));
   app.get('/api/workspaces', async () => accountBridge.request('worker.workspaces'));
   app.post('/api/objectives', async (req) => submitObjective(req.body));
+  app.post('/api/objectives/:id/inputs',async req=>{
+    const bearer=(req.headers.authorization??'').replace(/^Bearer /,'');
+    return registerObjectiveInput(z.uuid().parse((req.params as any).id),req.body,
+      {channel:bearer&&equal(bearer,config.apiToken)?'api-token':'operator-session'});
+  });
   app.get('/api/objectives/:id', async (req) =>
     objectiveDetail(z.uuid().parse((req.params as any).id)),
   );

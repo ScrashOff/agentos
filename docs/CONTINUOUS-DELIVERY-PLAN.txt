@@ -1,6 +1,11 @@
 AgentOS — plano da próxima etapa: insumos, recuperação e entrega contínua
-Data: 25/10/2026. Situação: plano; os mecanismos propostos não estão implementados
-por este documento. Identidades e provas operacionais ficam fora do Git público.
+Data: 25/10/2026. Situação: plano com execução parcial descrita abaixo.
+Identidades e provas operacionais ficam fora do Git público.
+
+Execução iniciada: registro autenticado de entradas imutáveis por objetivo e
+requisito, com hash, proveniência, idempotência, feedback canônico e propagação
+para futuros work/integração/QA. Consulte OBJECTIVE-INPUTS.txt. Essa entrega não
+implementa descoberta autônoma de arquivos no host nem comprova autonomia geral.
 
 OBJETIVO E BASE
 
@@ -144,4 +149,4 @@ entre tentativas. Operação e testes rodam no servidor, em ambientes separados.
 Cada mudança tem candidato/commit, hipótese, teste antes/depois, resultado e limite.
 Registrar baseline, execução, intervenções, hashes e próxima observação. Segredos,
 endereços reais, dados privados e arquivos operacionais ficam fora deste Git.
-Nenhum dos mecanismos futuros deste plano foi implantado ao escrever este arquivo.
+As demais propostas continuam pendentes de implementação ou qualificação.
