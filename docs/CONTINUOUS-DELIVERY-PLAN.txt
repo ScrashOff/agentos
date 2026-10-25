@@ -15,6 +15,12 @@ ou cancelamento atual. Consulte EVENT-DRIVEN-SUPERVISION.txt. A qualificação
 operacional, métricas de ganho e automação de interrupção continuam pendentes;
 o detector não concede autoridade para parar, aceitar ou ampliar escopo.
 
+Implementação subsequente: identidade de subtarefa separada da cobertura de
+requisito, dependências com fontes aceitas, joins intermediários e QA do conjunto.
+Falha de contrato do planner pode acionar revisão GLM opt-in no mesmo dono,
+preservando a prova da candidata anterior; proposta inválida da revisão pede
+alternativa sequencial completa e não um loop infinito. Consulte PLANNING-SUBTASKS.txt.
+
 OBJETIVO E BASE
 
 Converter falhas detectadas em correções consumidas e verificadas pelo runtime,

@@ -83,5 +83,7 @@ Os testes presentes no repositório não constituem certificação de autonomia 
 O contrato de observação de loops, revisão por eventos e seus limites está em
 [EVENT-DRIVEN-SUPERVISION.txt](docs/EVENT-DRIVEN-SUPERVISION.txt). Testes isolados
 e replay histórico não substituem a qualificação de autonomia em produção.
+Subtarefas por requisito, dependências e recuperação supervisionada do planner
+estão descritas em [PLANNING-SUBTASKS.txt](docs/PLANNING-SUBTASKS.txt).
 
 O desenho foi estudado a partir de [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), [ShackleAI Orchestrator](https://github.com/shackleai/orchestrator), [OSymandias](https://github.com/andreisilva1/OSymandias) e [Laya](https://github.com/NandhaKishorM/laya). Esses projetos são referências e integrações separadas; suas contas, runtimes e serviços não são distribuídos aqui.

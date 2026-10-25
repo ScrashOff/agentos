@@ -158,6 +158,7 @@ export function validatePlan(
         p.startsWith('/') ||
         p.includes('..') ||
         p.includes('\\') ||
+        p.includes('//') || /(^|\/)\.(\/|$)/.test(p) ||
         /(^|\/)(\.git|node_modules|assets)(\/|$)/.test(p),
     );
     if (refusedPath !== undefined)
@@ -205,12 +206,16 @@ export function validatePlan(
       fail('Partição incremental inválida ou escopo não suportado.');
     if (plan.tasks.some(t => t.stage !== 'verify' && t.covers.some(id => !selectedIds.includes(id))))
       fail('O lote deve implementar somente seu requisito selecionado.');
-    if (selectedIds.length > 1) {
-      const work = plan.tasks.filter(t => t.stage === 'work');
+    const work = plan.tasks.filter(t => t.stage === 'work');
+    if(selectedIds.some(id=>!work.some(w=>w.covers.includes(id))))
+      fail('Requisito selecionado sem subtarefa de implementação.',{violation:'MISSING_REQUIREMENT_WORK'});
+    if (work.length > 1) {
       const seenPaths: { key: string; path: string }[] = [];
-      if (work.length !== selectedIds.length)
-        fail('O lote paralelo exige uma tarefa de entrega por requisito selecionado.');
       for (const w of work) {
+        if(w.covers.length!==1)
+          fail('Cada subtarefa deve identificar seu requisito.',{violation:'TASK_REQUIREMENT_BINDING',task:w.key});
+        if(w.dependencies.length&&!w.sourceTask)
+          fail('Subtarefa dependente precisa da candidata produzida por suas dependências.',{violation:'DEPENDENCY_SOURCE_REQUIRED',task:w.key});
         if (!w.writePaths.length)
           fail('Entregas paralelas no mesmo lote exigem writePaths explícitos.', { task: w.key });
         for (const rawPath of w.writePaths) {

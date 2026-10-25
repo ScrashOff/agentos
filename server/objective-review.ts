@@ -42,7 +42,8 @@ export async function installObjectiveReview(){
       ALTER TABLE objective_review_signals ADD COLUMN IF NOT EXISTS usage jsonb;
       CREATE OR REPLACE FUNCTION agentos_objective_control_notify() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN IF NEW.kind IN('PLANNING_FEEDBACK','OBJECTIVE_INPUT_REGISTERED','OBJECTIVE_INPUT_REQUESTED',
-        'OBJECTIVE_REVIEW_QUEUED','OBJECTIVE_REVIEW_POLICY','OBJECTIVE_REVIEW_EFFECT_VERIFIED') THEN
+        'OBJECTIVE_REVIEW_QUEUED','OBJECTIVE_REVIEW_POLICY','OBJECTIVE_REVIEW_EFFECT_VERIFIED',
+        'PLANNING_BLOCKED','PLANNING_REVIEW_QUEUED','PLANNING_REVIEW_EFFECT_VERIFIED') THEN
         PERFORM pg_notify('agentos_planning_wake',''); END IF; RETURN NEW; END $$;
       DROP TRIGGER IF EXISTS agentos_objective_control_notify ON events;
       CREATE TRIGGER agentos_objective_control_notify AFTER INSERT ON events
