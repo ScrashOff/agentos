@@ -55,6 +55,35 @@ it('does not turn an accepted partial lot into a completed objective',async()=>{
   await tx(async db=>{await lock(db);await refreshGoal(db,objectiveId);});
   expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('active');
 });
+async function addHistoricalCancellation(goalId:string){
+  await pool.query(`INSERT INTO tasks(id,goal_id,key,title,description,agent_id,state,stage,plan_revision,criteria)
+    VALUES($1,$2,'obsolete-cancelled','Old bounded attempt','Historical cancellation','qa.backend','cancelled','work',0,'[]')`,[randomUUID(),goalId]);
+}
+it('does not derive objective cancellation from a cancelled task in an older revision',async()=>{
+  const {objectiveId}=await start();await acceptBatch(objectiveId,1);await addHistoricalCancellation(objectiveId);
+  await tx(async db=>{await lock(db);await refreshGoal(db,objectiveId);});
+  expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('active');
+});
+it('reconciles the historical cancellation defect without rewriting tasks, acceptances or runs',async()=>{
+  const {objectiveId}=await start();await acceptBatch(objectiveId,1);await addHistoricalCancellation(objectiveId);
+  await pool.query("UPDATE goals SET state='cancelled' WHERE id=$1",[objectiveId]);
+  await pool.query("UPDATE objectives SET status='cancelled' WHERE id=$1",[objectiveId]);
+  const runs=(await pool.query('SELECT id,fence,state FROM runs WHERE task_id IN(SELECT id FROM tasks WHERE goal_id=$1) ORDER BY id',[objectiveId])).rows;
+  await reconcilePlanning();
+  expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('replanning');
+  expect((await pool.query('SELECT id,fence,state FROM runs WHERE task_id IN(SELECT id FROM tasks WHERE goal_id=$1) ORDER BY id',[objectiveId])).rows).toEqual(runs);
+  expect((await pool.query("SELECT 1 FROM events WHERE kind='OBJECTIVE_STATE_RECONCILED' AND entity_id=$1",[objectiveId])).rowCount).toBe(1);
+  expect((await pool.query("SELECT state FROM tasks WHERE goal_id=$1 AND key='obsolete-cancelled'",[objectiveId])).rows[0].state).toBe('cancelled');
+});
+it('does not reopen an objective whose current revision was actually cancelled',async()=>{
+  const {objectiveId}=await start();await addHistoricalCancellation(objectiveId);
+  await pool.query("UPDATE tasks SET state='cancelled' WHERE goal_id=$1",[objectiveId]);
+  await pool.query("UPDATE goals SET state='cancelled' WHERE id=$1",[objectiveId]);
+  await pool.query("UPDATE objectives SET status='cancelled' WHERE id=$1",[objectiveId]);
+  await reconcilePlanning();
+  expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('cancelled');
+  expect((await pool.query("SELECT 1 FROM events WHERE kind='OBJECTIVE_STATE_RECONCILED' AND entity_id=$1",[objectiveId])).rowCount).toBe(0);
+});
 it('does not let feedback stranded on a failed planning run block a verified advance forever',async()=>{
   const {objectiveId,input,plan}=await start();await acceptBatch(objectiveId,1);
   await feedbackObjective(objectiveId,'stranded-counterexample','Counterexample antigo a considerar no proximo plano.');
@@ -89,6 +118,24 @@ it('keeps the accumulated accepted candidate as replan source when a later work 
   expect(queued).toHaveLength(1);
   expect(queued[0].feedback.sourceOverrides['test/base']).toContain('r1-deliver');
   expect(queued[0].feedback.sourceOverrides['test/base']).not.toContain('r2');
+});
+it('carries immutable artifacts from a rejected submitted delivery without certifying its partial source',async()=>{
+  const {objectiveId,input,plan}=await start();await acceptBatch(objectiveId,1);await reconcilePlanning();
+  const planning=await claimPlanning();await applyPlannedResult(planning,compileDelivery(decision('req-2'),input,plan,true));
+  const task=(await pool.query("SELECT id FROM tasks WHERE goal_id=$1 AND plan_revision=2 AND stage='work'",[objectiveId])).rows[0];
+  const runId=randomUUID(),artifactId=randomUUID();
+  await pool.query("INSERT INTO runs(id,task_id,attempt,state,fence,runtime,agent_version,summary) VALUES($1,$2,1,'submitted',$3,'harness',1,'Original input exposed a candidate regression.')",[runId,task.id,randomUUID()]);
+  await pool.query("UPDATE tasks SET state='submitted',attempt_count=1 WHERE id=$1",[task.id]);
+  await pool.query("INSERT INTO acceptances(id,task_id,run_id,passed,checks,reviewer) VALUES($1,$2,$3,false,'[]','test-fixture')",[randomUUID(),task.id,runId]);
+  await pool.query("INSERT INTO artifacts(id,run_id,name,mime,digest,size) VALUES($1,$2,'changes.patch','text/plain',$3,2)",[artifactId,runId,'b'.repeat(64)]);
+  await reconcilePlanning();await reconcilePlanning();
+  const queued=(await pool.query("SELECT * FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rows;
+  expect(queued).toHaveLength(1);
+  expect(queued[0].feedback.artifacts).toContainEqual({id:artifactId,name:'changes.patch',digest:'b'.repeat(64)});
+  expect(queued[0].feedback.sourceOverrides['test/base']).toContain('r1-deliver');
+  expect(queued[0].feedback.sourceOverrides['test/base']).not.toContain('r2');
+  expect((await pool.query('SELECT state FROM tasks WHERE id=$1',[task.id])).rows[0].state).toBe('submitted');
+  expect((await pool.query('SELECT passed FROM acceptances WHERE run_id=$1',[runId])).rows[0].passed).toBe(false);
 });
 it('queues exactly one successor across repeated/concurrent reconciliation and carries its verified source',async()=>{
   const {objectiveId}=await start();await acceptBatch(objectiveId,1);

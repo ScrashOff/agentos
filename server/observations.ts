@@ -5,6 +5,7 @@ import { pool, event, type DB } from './db.js';
 import { checkedExecutionMetadata, executionMetadataColumns, taskExecutionMetadataVersion } from './task-execution-metadata.js';
 import { config } from './config.js';
 import type { PoolClient } from 'pg';
+import {recordObjectiveLoop} from './objective-review.js';
 const exec = promisify(execFile);
 
 export async function readObservedRunCandidates(db: DB) {
@@ -107,7 +108,11 @@ export class RunObserver {
       const hash = createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
       const old = this.previous.get(run.id);
       if (old?.hash === hash && Date.now() - old.at < 60000 && !final) continue;
-      await event(this.client, 'EXECUTION_OBSERVED', run.task_id, { runId: run.id, observation });
+      const observed=(await this.client.query(`INSERT INTO events(kind,entity_id,payload)
+        VALUES('EXECUTION_OBSERVED',$1,$2) RETURNING id`,[run.task_id,JSON.stringify({runId:run.id,observation})])).rows[0];
+      await recordObjectiveLoop(run.id,String(observed.id),observation).catch(async()=>{
+        await event(this.client!,'OBJECTIVE_REVIEW_OBSERVATION_UNAVAILABLE',run.task_id,{runId:run.id});
+      });
       this.previous.set(run.id, { hash, at: Date.now(), final: final && !observation.unavailable });
     }
   }

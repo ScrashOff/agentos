@@ -80,4 +80,8 @@ Os testes presentes no repositório não constituem certificação de autonomia 
 
 ## Referências
 
+O contrato de observação de loops, revisão por eventos e seus limites está em
+[EVENT-DRIVEN-SUPERVISION.txt](docs/EVENT-DRIVEN-SUPERVISION.txt). Testes isolados
+e replay histórico não substituem a qualificação de autonomia em produção.
+
 O desenho foi estudado a partir de [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), [ShackleAI Orchestrator](https://github.com/shackleai/orchestrator), [OSymandias](https://github.com/andreisilva1/OSymandias) e [Laya](https://github.com/NandhaKishorM/laya). Esses projetos são referências e integrações separadas; suas contas, runtimes e serviços não são distribuídos aqui.

@@ -161,7 +161,9 @@ export async function createDemo() {
 }
 export async function refreshGoal(db: DB, id: string) {
   const rows = (
-    await db.query("SELECT state FROM tasks WHERE goal_id=$1 AND state<>'superseded'", [id])
+    await db.query(`SELECT t.state FROM tasks t WHERE t.goal_id=$1 AND t.state<>'superseded'
+      AND (t.plan_revision IS NULL OR t.plan_revision=COALESCE(
+        (SELECT max(p.revision) FROM plan_revisions p WHERE p.objective_id=t.goal_id),t.plan_revision))`, [id])
   ).rows;
   if (!rows.length) return;
   let state = 'active';

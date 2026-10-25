@@ -18,6 +18,7 @@ import {
 import { planningContext } from './planning-context.js';
 import { incrementalEligible, deliveryFrontier, deliveryDecisionSchema, compileDelivery, bindDeliveryFeedback, queueNextDelivery, assertIncrementalAuthority } from './incremental-planning.js';
 import {readObjectiveInputs,inputsForRequirements} from './objective-inputs.js';
+import {reconcileInheritedCancellation} from './objective-state-repair.js';
 
 export async function submitObjective(raw: unknown) {
   const request = objectiveSchema.parse(raw);
@@ -154,6 +155,7 @@ export async function feedbackObjective(id: string, key: string, description: st
 export async function reconcilePlanning() {
   await tx(async (db) => {
     await lock(db);
+    await reconcileInheritedCancellation(db);
     // Planner has no external side effects: stale output is fenced; only plan application writes tasks.
     await db.query(
       "UPDATE planning_runs SET state='queued',fence=gen_random_uuid(),error='Planejamento retomado após perda do executor.',next_attempt_at=now() WHERE state='running' AND heartbeat_at<now()-interval '60 seconds'",
@@ -195,7 +197,13 @@ export async function reconcilePlanning() {
       if (!hasPendingFeedback && latest?.incremental && await queueNextDelivery(db, o, latest)) continue;
       const failed = (
         await db.query(
-          "SELECT t.*,r.id run_id,r.summary,r.error_code FROM tasks t JOIN LATERAL(SELECT * FROM runs WHERE task_id=t.id ORDER BY attempt DESC LIMIT 1) r ON true WHERE t.goal_id=$1 AND t.state='recovery_blocked'",
+          `SELECT t.*,r.id run_id,r.summary,r.error_code,(t.state='submitted') rejected_delivery FROM tasks t
+            JOIN LATERAL(SELECT * FROM runs WHERE task_id=t.id ORDER BY attempt DESC LIMIT 1) r ON true
+            WHERE t.goal_id=$1 AND (t.state='recovery_blocked' OR
+              (t.state='submitted' AND r.state='submitted'
+                AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.run_id=r.id)
+                AND EXISTS(SELECT 1 FROM acceptances a WHERE a.run_id=r.id AND NOT a.passed)
+                AND NOT EXISTS(SELECT 1 FROM acceptances a WHERE a.run_id=r.id AND a.passed)))`,
           [o.id],
         )
       ).rows;
@@ -285,7 +293,7 @@ export async function reconcilePlanning() {
       if (accumulated?.execution?.baseWorkspace && accumulated.execution.workspace)
         sourceOverrides[accumulated.execution.baseWorkspace] = accumulated.execution.workspace;
       for (const t of failed)
-        if (t.execution?.baseWorkspace && !(t.execution.baseWorkspace in sourceOverrides))
+        if (!t.rejected_delivery && t.execution?.baseWorkspace && !(t.execution.baseWorkspace in sourceOverrides))
           sourceOverrides[t.execution.baseWorkspace] = t.execution.workspace;
       if (
         !repairInput &&

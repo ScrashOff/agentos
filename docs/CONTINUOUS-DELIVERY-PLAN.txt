@@ -7,6 +7,14 @@ requisito, com hash, proveniência, idempotência, feedback canônico e propaga�
 para futuros work/integração/QA. Consulte OBJECTIVE-INPUTS.txt. Essa entrega não
 implementa descoberta autônoma de arquivos no host nem comprova autonomia geral.
 
+Próxima entrega implementada no fonte: despertar por eventos no mesmo dono do
+objetivo, observação conservadora de repetição e revisão GLM opt-in, com intenção
+persistida, recibo de orientação e verificação posterior. Também foi corrigida
+a derivação do estado a partir de cancelamentos históricos, sem reabrir pausa
+ou cancelamento atual. Consulte EVENT-DRIVEN-SUPERVISION.txt. A qualificação
+operacional, métricas de ganho e automação de interrupção continuam pendentes;
+o detector não concede autoridade para parar, aceitar ou ampliar escopo.
+
 OBJETIVO E BASE
 
 Converter falhas detectadas em correções consumidas e verificadas pelo runtime,
