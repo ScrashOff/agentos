@@ -25,7 +25,7 @@ import { supervisionInputs, mergeSupervisorInputs } from './supervision-context.
 import { supervisionEvidenceFingerprint } from './supervision-wait.js';
 import { WorkerEngine } from './worker.js';
 import {SupervisorDispatchPool} from './supervisor-dispatch-pool.js';
-import {supervisorLeaseAcquirer} from './supervisor-owner-lease.js';
+import {supervisorLeaseAcquirer,supervisorLeaseKey} from './supervisor-owner-lease.js';
 import {selectPendingLiveFailureAffinity} from './manager-live-focus-affinity.js';
 import { managementContract, managementSnapshot, hasPendingManagementReview, recordManagementTransitions } from './management.js';
 import {readManagementMateriality,canWaitForManagementFacts,hasActionableManagementConsumption} from './management-materiality.js';
@@ -1845,7 +1845,73 @@ const executor = new WorkerEngine();
 executor.stopped = true; // Only execute persisted supervisor jobs; never run a second scheduler.
 const dispatchPool=new SupervisorDispatchPool({acquireLease:supervisorLeaseAcquirer(pool),transaction:fn=>tx(async db=>{await lock(db);return fn(db);}),
  execute:id=>executor.execute(id),onError:()=>event(pool,'SUPERVISOR_EXECUTOR_ERROR','supervisor',{})});
+export async function reconcileLostAnalyticalSupervisors(db:DB=pool) {
+  return tx(async client => {
+    await lock(client);
+    const {rows} = await client.query(`
+      SELECT r.id AS run_id, r.task_id, r.fence, r.attempt,
+             s.value->>'backendPid' AS backend_pid
+      FROM runs r
+      JOIN tasks t ON t.id = r.task_id
+      LEFT JOIN supervisor_jobs sj ON sj.run_id = r.id
+      LEFT JOIN settings s ON s.id = 'supervisor-owner:' || r.id::text
+      WHERE r.state = 'reconciling'
+        AND r.error_code = 'HEARTBEAT_LOST'
+        AND t.stage = 'coordinate'
+        AND t.execution IS NULL
+        AND NOT EXISTS (SELECT 1 FROM artifacts a WHERE a.run_id = r.id)
+      ORDER BY r.created_at ASC
+    `, []);
+    let reconciled = 0;
+    for (const row of rows) {
+      if (row.backend_pid && /^\d+$/.test(String(row.backend_pid))) {
+        const pidCheck = await client.query(
+          'SELECT 1 FROM pg_stat_activity WHERE pid = $1::int',
+          [Number(row.backend_pid)]
+        );
+        if ((pidCheck.rowCount ?? 0) > 0) continue;
+      }
+      const keys = supervisorLeaseKey(row.run_id);
+      const lockCheck = await client.query(
+        `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid::bigint = $1::bigint AND objid::bigint = $2::bigint AND objsubid = 2 AND granted`,
+        [keys[0] >>> 0, keys[1] >>> 0]
+      );
+      if ((lockCheck.rowCount ?? 0) > 0) continue;
+
+      await client.query(
+        `UPDATE runs
+            SET state = 'failed',
+                finished_at = COALESCE(finished_at, now()),
+                summary = COALESCE(summary, 'Analytical supervisor owner connection lost before output; reconciled for re-wake.')
+          WHERE id = $1 AND state = 'reconciling'`,
+        [row.run_id]
+      );
+      await client.query(
+        `UPDATE tasks
+            SET state = 'failed',
+                updated_at = now()
+          WHERE id = $1 AND state IN ('running', 'reconciling')`,
+        [row.task_id]
+      );
+      await client.query(
+        `UPDATE supervisor_jobs
+            SET state = 'completed'
+          WHERE run_id = $1 AND state = 'running'`,
+        [row.run_id]
+      );
+      await client.query(`DELETE FROM leases WHERE run_id = $1`, [row.run_id]);
+      await event(client, 'SUPERVISOR_ANALYTICAL_RECONCILED', row.task_id, {
+        runId: row.run_id,
+        attempt: row.attempt,
+        reason: 'analytical_owner_lost_without_artifacts',
+      });
+      reconciled++;
+    }
+    return reconciled;
+  });
+}
 export async function runSupervisorJobs() {
+  await reconcileLostAnalyticalSupervisors();
   await dispatchPool.dispatch();
 }
 export async function closeSupervisorJobs() {

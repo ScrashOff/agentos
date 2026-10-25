@@ -12,7 +12,8 @@ import { stopUnit } from './process-stop.mjs';
 import { openCodeMemory } from './runtime-memory.mjs';
 import { requestGatedModel } from './gated-generation.mjs';
 import { collectArtifacts, parseArtifactResult } from './artifact-collector.mjs';
-import { deliveryContract, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstruction } from './delivery-manifest.mjs';
+import { museTaskDeliveryInstruction } from './task-delivery-contract.mjs';
+import { deliveryContract, extractPromptJsonFields, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstructionFor } from './delivery-manifest.mjs';
 import { protocolDelivery } from './protocol-delivery.mjs';
 import { materializeSourceInputs } from './source-inputs.mjs';
 import { verifyProtocolReport, protocolReportDiagnostic, protocolReportRepairInstruction } from './protocol-report-contract.mjs';
@@ -92,7 +93,8 @@ async function executeOpenCode(params, signal, emit) {
   const workspace = `${ROOT}/${params.workspace}`;
   const home = `${dir}/home`;
   const outputContract = deliveryContract(params.runId, params.deliveryContract?.artifacts?.map(a => a.name) ??
-    (params.testFile ? ['protocol-report.json', 'protocol-tests.log'] : params.workKind === 'planning' ? ['scope-plan.json'] : []));
+    (params.testFile ? ['protocol-report.json', 'protocol-tests.log'] : params.workKind === 'planning' ? ['scope-plan.json'] : []),
+    extractPromptJsonFields(params.prompt));
   let repairSnapshot = null;
   const sock = `${dir}/model.sock`;
   const unit = `agentos-run-${params.runId}`;
@@ -184,8 +186,11 @@ async function executeOpenCode(params, signal, emit) {
             low: { reasoningEffort: 'low' }, high: { reasoningEffort: 'high' }, max: { reasoningEffort: 'max' },
           } } } } },
     }));
-    await writeFile(`${home}/prompt.txt`, `${params.prompt}${sourceInputs.instruction}\n\nContext manifest and shared memory: /home/agent/context.json\nInputs: /home/agent/inputs/\nImplement and test the scoped work in /workspace. Source files are mounted read-only; write only under ${writePaths.join(', ')} and use data/ for temporary test state. Routine errors are work to fix within this scope, not grounds to stop. No external network or production files are available. Browser library if needed: /opt/agentos-runtime/node_modules/playwright/index.mjs. Save real evidence in /workspace/evidence. Final response MUST be only JSON {"summary":"what actually changed and was tested, including limitations","artifacts":[{"name":"report.json","path":"evidence/report.json","mime":"application/json"}]}. Paths must be real files relative to /workspace. Do not claim independent acceptance. Do not use reserved artifact names candidate.json or changes.patch; the controller generates these.`);
-    await appendFile(`${home}/prompt.txt`, deliveryManifestInstruction);
+    const exampleArtifacts = params.deliveryContract?.artifacts?.length
+      ? params.deliveryContract.artifacts
+      : [{ name: 'report.json', path: 'evidence/report.json', mime: 'application/json' }];
+    await writeFile(`${home}/prompt.txt`, `${params.prompt}${sourceInputs.instruction}\n\nContext manifest and shared memory: /home/agent/context.json\nInputs: /home/agent/inputs/\nImplement and test the scoped work in /workspace. Source files are mounted read-only; write only under ${writePaths.join(', ')} and use data/ for temporary test state. Routine errors are work to fix within this scope, not grounds to stop. No external network or production files are available. Browser library if needed: /opt/agentos-runtime/node_modules/playwright/index.mjs. Save real evidence in /workspace/evidence. Final response MUST be only JSON {"summary":"what actually changed and was tested, including limitations","artifacts":${JSON.stringify(exampleArtifacts)}}. Paths must be real files relative to /workspace. Do not claim independent acceptance. Do not use reserved artifact names candidate.json or changes.patch; the controller generates these.` + museTaskDeliveryInstruction(params.deliveryContract));
+    await appendFile(`${home}/prompt.txt`, deliveryManifestInstructionFor(outputContract));
     if (repairSnapshot) await appendFile(`${home}/prompt.txt`, repairFinalizationInstruction);
     if (params.testFile) await appendFile(`${home}/prompt.txt`, '\n\nContrato da suíte atribuída: ' + protocolReportRepairInstruction('', params.testFile));
     gateway = createServer(async (req, res) => {

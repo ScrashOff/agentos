@@ -55,6 +55,41 @@ it('does not turn an accepted partial lot into a completed objective',async()=>{
   await tx(async db=>{await lock(db);await refreshGoal(db,objectiveId);});
   expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('active');
 });
+it('does not let feedback stranded on a failed planning run block a verified advance forever',async()=>{
+  const {objectiveId,input,plan}=await start();await acceptBatch(objectiveId,1);
+  await feedbackObjective(objectiveId,'stranded-counterexample','Counterexample antigo a considerar no proximo plano.');
+  await reconcilePlanning();
+  const stranded=await claimPlanning();
+  await pool.query("UPDATE planning_runs SET state='failed' WHERE id=$1",[stranded.id]);
+  await reconcilePlanning();
+  // A failed planner alone queues nothing and must not silently advance.
+  expect((await pool.query("SELECT 1 FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rowCount).toBe(0);
+  // Fresh evidence drives a later completed revision, superseding the stranded feedback.
+  await feedbackObjective(objectiveId,'fresh-counterexample','Counterexample novo: reproduzir e corrigir na candidata acumulada.');
+  await reconcilePlanning();
+  const run=await claimPlanning();
+  await pool.query("UPDATE planning_runs SET state='running' WHERE id=$1",[run.id]);
+  await applyPlannedResult(run,compileDelivery(decision(),input,plan,false,run.feedback.reports));
+  await acceptBatch(objectiveId,2);
+  await reconcilePlanning();
+  const queued=(await pool.query("SELECT * FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rows;
+  expect(queued).toHaveLength(1);
+  expect(queued[0].trigger_key).toMatch(/^incremental:/);
+  expect(queued[0].feedback.incrementalAdvance).toBeTruthy();
+});
+it('keeps the accumulated accepted candidate as replan source when a later work revision fails',async()=>{
+  const {objectiveId,input,plan}=await start();await acceptBatch(objectiveId,1);await reconcilePlanning();
+  const run=await claimPlanning();await applyPlannedResult(run,compileDelivery(decision('req-2'),input,plan,true));
+  const deliver=(await pool.query("SELECT id,execution FROM tasks WHERE goal_id=$1 AND plan_revision=2 AND stage='work'",[objectiveId])).rows[0];
+  expect(deliver.execution.workspace).toContain('r2');
+  await pool.query("INSERT INTO runs(id,task_id,attempt,state,fence,runtime,agent_version) VALUES($1,$2,1,'failed',$3,'harness',1)",[randomUUID(),deliver.id,randomUUID()]);
+  await pool.query("UPDATE tasks SET state='recovery_blocked',attempt_count=1 WHERE id=$1",[deliver.id]);
+  await reconcilePlanning();
+  const queued=(await pool.query("SELECT * FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rows;
+  expect(queued).toHaveLength(1);
+  expect(queued[0].feedback.sourceOverrides['test/base']).toContain('r1-deliver');
+  expect(queued[0].feedback.sourceOverrides['test/base']).not.toContain('r2');
+});
 it('queues exactly one successor across repeated/concurrent reconciliation and carries its verified source',async()=>{
   const {objectiveId}=await start();await acceptBatch(objectiveId,1);
   await Promise.all(Array.from({length:4},()=>reconcilePlanning()));
@@ -231,4 +266,69 @@ it('persists a child before its parent atomically and rejects cyclic or absent p
   await applyPlannedResult(run,plan);
   const rows=(await pool.query('SELECT id,key,parent_task_id FROM tasks')).rows;
   expect(rows.find(t=>t.key.endsWith('-deliver')).parent_task_id).toBe(rows.find(t=>t.key.endsWith('-verify')).id);
+});
+
+it('compiles and advances a parallel incremental window with disjoint writePaths, integration and verification',async()=>{
+  const input=objectiveSchema.parse({message:'Corrigir três módulos independentes com verificação acumulada.',project:'test',
+    workspaces:['test/base'],mode:'execute',planningStrategy:'incremental',
+    requirements:['O módulo A deve rejeitar entradas nulas.','O módulo B deve preservar precisão decimal.','O módulo C deve registrar auditoria.'],
+    idempotencyKey:randomUUID()});
+  const agents=(await pool.query('SELECT * FROM agents')).rows;
+  expect(()=>compileDelivery({deliveries:[{...decision('req-1'),writePaths:['src/a.ts']},{...decision('req-2'),title:'Corrigir precisão',writePaths:['src/a.ts']}]},input)).toThrow();
+  expect(()=>compileDelivery({deliveries:[{...decision('req-1')},{...decision('req-2'),title:'Corrigir precisão',writePaths:['src/b.ts']}]},input)).toThrow();
+  const windowPlan=compileDelivery({deliveries:[
+    {...decision('req-1'),writePaths:['src/a.ts']},
+    {...decision('req-2'),title:'Corrigir precisão decimal',writePaths:['src/b.ts']},
+  ]},input);
+  validatePlan(windowPlan,input,agents,[]);
+  expect(windowPlan.tasks.map(t=>t.stage)).toEqual(['work','work','integrate','verify']);
+  expect(windowPlan.incremental).toEqual({
+    version:1,
+    selectedRequirementId:'req-1',
+    selectedRequirementIds:['req-1','req-2'],
+    completedRequirementIds:[],
+    pendingRequirementIds:['req-3'],
+  });
+  const {objectiveId}=await submitObjective(input);
+  await applyPlannedResult(await claimPlanning(),windowPlan);
+  await acceptBatch(objectiveId,1);
+  await reconcilePlanning();
+  const nextRun=await claimPlanning();
+  expect(nextRun.feedback.sourceOverrides['test/base']).toContain('r1-integrate');
+  const finalPlan=compileDelivery(decision('req-3'),input,windowPlan,true);
+  expect(finalPlan.incremental?.completedRequirementIds).toEqual(['req-1','req-2']);
+  expect(finalPlan.tasks.find(t=>t.stage==='verify')?.covers).toEqual(['req-1','req-2','req-3']);
+  await applyPlannedResult(nextRun,finalPlan);
+  await acceptBatch(objectiveId,2);
+  await tx(async db=>{await lock(db);await refreshGoal(db,objectiveId);});
+  expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('completed');
+});
+
+it('rebinds unaccepted agentos objectives to the current published agentos-source-workspace on feedback',async()=>{
+  const staleSource='agentos/src1111111111111111',publishedSource='agentos/src2222222222222222';
+  await pool.query(
+    `INSERT INTO settings VALUES('agentos-source-workspace',$1::jsonb)
+     ON CONFLICT(id) DO UPDATE SET value=EXCLUDED.value`,
+    [JSON.stringify({workspace:publishedSource})],
+  );
+  const input=objectiveSchema.parse({
+    message:'Evoluir o AgentOS preservando a baseline publicada.',
+    project:'agentos',
+    workspaces:[staleSource],
+    mode:'execute',
+    planningStrategy:'incremental',
+    requirements:['O módulo A deve rejeitar entradas nulas.','O módulo B deve preservar precisão decimal.'],
+    idempotencyKey:randomUUID(),
+  });
+  const {objectiveId}=await submitObjective(input);
+  await applyPlannedResult(await claimPlanning(),compileDelivery(decision('req-1'),input));
+  const deliver=(await pool.query("SELECT id FROM tasks WHERE goal_id=$1 AND stage='work'",[objectiveId])).rows[0];
+  const runId=randomUUID();
+  await pool.query("INSERT INTO runs(id,task_id,attempt,state,fence,runtime,agent_version) VALUES($1,$2,1,'failed',$3,'harness',1)",[runId,deliver.id,randomUUID()]);
+  await pool.query("UPDATE tasks SET state='recovery_blocked',attempt_count=1 WHERE id=$1",[deliver.id]);
+  await feedbackObjective(objectiveId,'rebind-published-source','Retomar na nova release publicada após correção do runtime.');
+  await reconcilePlanning();
+  const queued=(await pool.query("SELECT * FROM planning_runs WHERE objective_id=$1 AND state='queued'",[objectiveId])).rows[0];
+  expect(queued.feedback.acceptedCount).toBe(0);
+  expect(queued.feedback.sourceOverrides[staleSource]).toBe(publishedSource);
 });

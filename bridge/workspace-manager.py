@@ -5,7 +5,7 @@ _storage_spec=importlib.util.spec_from_file_location('agentos_storage_capacity',
 storage_capacity=importlib.util.module_from_spec(_storage_spec);_storage_spec.loader.exec_module(storage_capacity)
 ROOT=pathlib.Path('/srv/agentos/workspaces')
 DATA=pathlib.Path('/var/lib/agentos-bridge')
-SKIP={'.git','node_modules','evidence','data','.agentos-snapshot.json'}
+SKIP={'.git','node_modules','evidence','data','.agentos-snapshot.json','.local-test','test-results','playwright-report'}
 def digest_key(value): return hashlib.sha256(value.encode()).hexdigest()
 def workspace(value):
     if not re.fullmatch(r'[a-z0-9_-]+/[a-z0-9_-]+',value): raise ValueError('INVALID_WORKSPACE')

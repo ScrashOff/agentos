@@ -15,6 +15,7 @@ import {
   recordSupervisionDecisions,
   applySupervisionDecisions,
   runSupervisorJobs,
+  reconcileLostAnalyticalSupervisors,
   closeSupervisorJobs,
   resumeSupervisedWork,
 } from '../server/supervision.js';
@@ -3403,4 +3404,50 @@ it.each(['stale-attempt', 'live-run', 'cancel-requested', 'stale-stop-proof'])('
     .toMatchObject({ account_id: 'codex', model: 'gpt-6-luna', lane: 'luna' });
   expect((await pool.query("SELECT count(*)::int n FROM events WHERE kind='SUPERVISION_ROUTE_CHANGED' AND entity_id=$1", [f.task])).rows[0].n).toBe(0);
   expect((await pool.query('SELECT state FROM supervision_cases WHERE id=$1', [caseId])).rows[0].state).not.toBe('applied');
+});
+
+it('reconciles orphaned analytical supervisor runs in reconciling HEARTBEAT_LOST without artifacts when owner backend is gone', async () => {
+  const f = await fixture();
+  const runId = randomUUID();
+  const fence = randomUUID();
+  await pool.query("UPDATE tasks SET state='reconciling', attempt_count=1 WHERE id=$1", [f.coordinator]);
+  await pool.query(
+    `INSERT INTO runs(id,task_id,attempt,fence,runtime,agent_version,state,error_code,worker_id,started_at)
+     VALUES($1,$2,1,$3,'harness',1,'reconciling','HEARTBEAT_LOST','agentos-backlog',now() - interval '10 minutes')`,
+    [runId, f.coordinator, fence]
+  );
+  await pool.query(
+    `INSERT INTO supervisor_jobs(run_id,state) VALUES($1,'running')`,
+    [runId]
+  );
+  await pool.query(
+    `INSERT INTO settings(id,value) VALUES($1,$2)`,
+    [
+      'supervisor-owner:' + runId,
+      JSON.stringify({
+        version: 1,
+        phase: 'claimed',
+        runId,
+        runFence: fence,
+        taskId: f.coordinator,
+        goalId: f.goal,
+        attempt: 1,
+        ownerNonce: randomUUID(),
+        backendPid: 99999999,
+      }),
+    ]
+  );
+
+  const count = await reconcileLostAnalyticalSupervisors();
+  expect(count).toBe(1);
+  expect((await pool.query('SELECT state, error_code, summary FROM runs WHERE id=$1', [runId])).rows[0]).toMatchObject({
+    state: 'failed',
+    error_code: 'HEARTBEAT_LOST',
+    summary: expect.stringContaining('Analytical supervisor owner connection lost'),
+  });
+  expect((await pool.query('SELECT state FROM tasks WHERE id=$1', [f.coordinator])).rows[0].state).toBe('failed');
+  expect((await pool.query('SELECT state FROM supervisor_jobs WHERE run_id=$1', [runId])).rows[0].state).toBe('completed');
+  expect(
+    (await pool.query("SELECT count(*)::int n FROM events WHERE kind='SUPERVISOR_ANALYTICAL_RECONCILED' AND entity_id=$1", [f.coordinator])).rows[0].n
+  ).toBe(1);
 });

@@ -8,7 +8,9 @@ O projeto mantém objetivos, tarefas, dependências, tentativas, filas, artefato
 
 Esta é uma publicação inicial do código em desenvolvimento. Existem limitações conhecidas no planejamento inicial, na recuperação e na convergência de tarefas para entregas verificadas. A autonomia contínua de ponta a ponta ainda não foi demonstrada. Número de sessões, heartbeat e resposta do modelo não comprovam conclusão de uma tarefa.
 
-O [planejamento incremental](docs/INCREMENTAL-DELIVERY.txt) permite executar um requisito por lote, com implementação e verificação independente, preservando os requisitos restantes. O controlador agenda o próximo lote após conferir o aceite e a candidata; o último verificador precisa comprovar o objetivo completo. Esse caminho ainda não oferece lotes incrementais paralelos nem substitui a qualificação contínua de autonomia.
+O [planejamento incremental](docs/INCREMENTAL-DELIVERY.txt) permite executar um requisito ou uma janela de até seis entregas com escopos de escrita disjuntos. Janelas paralelas incluem integração explícita e verificação independente. O controlador agenda o próximo lote após conferir o aceite e a candidata; o último verificador precisa comprovar o objetivo completo. Ainda existe uma barreira por lote: isso não equivale a uma janela continuamente reabastecida nem substitui a qualificação de autonomia.
+
+O [plano da próxima etapa](docs/CONTINUOUS-DELIVERY-PLAN.txt) prioriza insumos verificáveis, recuperação por causa e avanço medido por entregas aceitas. Mudanças disponíveis e trabalho proposto estão separados; código e testes aprovados não comprovam aplicação no runtime ou autonomia de 24 horas.
 
 A publicação contém uma cópia sanitizada do código, com histórico novo. Credenciais, bancos, sessões, memórias privadas, relatórios operacionais, dados dos projetos e scripts específicos de operações não fazem parte deste repositório. Hosts e identificadores de instalação foram substituídos por exemplos.
 

@@ -8,18 +8,46 @@ import { planSchema, type ObjectiveInput, type ProposedPlan } from './objective-
 // Semantic choices only. IDs, dependencies, runtime envelopes and receipt
 // formats are controller-owned. Inspired by Ruflo's action/precondition split;
 // no Ruflo runtime or second scheduler is installed.
-export const nextDeliverySchema = z.object({
+const writePathItemSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^(?![/\\])(?!.*\.\.)(?!.*\\)(?!\.git(?:\/|$))(?!node_modules(?:\/|$))(?!assets(?:\/|$))[a-zA-Z0-9._/-]+$/);
+
+const singleDeliveryFields = {
   requirementId: z.string(),
   title: z.string().min(3).max(120),
   action: z.string().min(25).max(1600),
   verification: z.string().min(25).max(1200),
   agentId: z.string(),
+  writePaths: z.array(writePathItemSchema).max(20).optional(),
+};
+
+export const nextDeliveryItemSchema = z.object(singleDeliveryFields).strict();
+
+export const nextDeliverySchema = z.object({
+  requirementId: z.string().optional(),
+  title: z.string().min(3).max(120).optional(),
+  action: z.string().min(25).max(1600).optional(),
+  verification: z.string().min(25).max(1200).optional(),
+  agentId: z.string().optional(),
+  writePaths: z.array(writePathItemSchema).max(20).optional(),
+  deliveries: z.array(nextDeliveryItemSchema).min(1).max(6).optional(),
 }).strict();
 
 export function deliveryDecisionSchema(agents: {id:string;runtime:string}[]) {
   const ids = [...new Set(agents.filter(a=>a.runtime==='harness').map(a=>a.id))];
   if (!ids.length) throw new DomainError('SCOPE_MISSING','Nenhum agente de execução disponível.');
-  return nextDeliverySchema.extend({agentId:z.enum(ids as [string,...string[]])});
+  const agentEnum = z.enum(ids as [string,...string[]]);
+  return nextDeliverySchema.extend({
+    agentId: agentEnum.optional(),
+    deliveries: z.array(nextDeliveryItemSchema.extend({ agentId: agentEnum })).min(1).max(6).optional(),
+  });
+}
+
+export function selectedRequirementIds(incremental?: ProposedPlan['incremental']): string[] {
+  if (!incremental) return [];
+  return incremental.selectedRequirementIds?.length ? incremental.selectedRequirementIds : [incremental.selectedRequirementId];
 }
 
 export function incrementalEligible(request: ObjectiveInput, previous?: ProposedPlan, glmOnly = false) {
@@ -32,36 +60,113 @@ export function incrementalEligible(request: ObjectiveInput, previous?: Proposed
 export function deliveryFrontier(request: ObjectiveInput, previous?: ProposedPlan, advance = false) {
   const requirements = previous?.requirements ?? request.requirements.map((description, i) => ({id: `req-${i+1}`, description}));
   const prior = previous?.incremental;
-  const completed = prior ? [...prior.completedRequirementIds, ...(advance ? [prior.selectedRequirementId] : [])] : [];
-  const eligible = prior ? (advance ? prior.pendingRequirementIds : [prior.selectedRequirementId]) : requirements.map(r => r.id);
+  const priorSelected = selectedRequirementIds(prior);
+  const completed = prior ? [...prior.completedRequirementIds, ...(advance ? priorSelected : [])] : [];
+  const eligible = prior ? (advance ? prior.pendingRequirementIds : priorSelected) : requirements.map(r => r.id);
   return { requirements, completed, eligible };
 }
 
 export function compileDelivery(raw: unknown, request: ObjectiveInput, previous?: ProposedPlan, advance = false, reports: string[] = []) {
-  const decision = nextDeliverySchema.parse(raw);
+  const parsed = nextDeliverySchema.parse(raw);
+  const items = parsed.deliveries?.length ? parsed.deliveries : [nextDeliveryItemSchema.parse(raw)];
   const { requirements, completed, eligible } = deliveryFrontier(request, previous, advance);
-  if (!eligible.includes(decision.requirementId)) throw new DomainError('PLAN_INVALID', 'Escolha um requisito elegível sem repetir entregas aceitas.');
-  const pending = requirements.map(r => r.id).filter(id => id !== decision.requirementId && !completed.includes(id));
-  const covers = pending.length ? [decision.requirementId] : requirements.map(r => r.id);
-  const selected = requirements.find(r => r.id === decision.requirementId)!;
+  const selectedIds = items.map(i => i.requirementId);
+  if (new Set(selectedIds).size !== selectedIds.length || selectedIds.some(id => !eligible.includes(id)))
+    throw new DomainError('PLAN_INVALID', 'Escolha um requisito elegível sem repetir entregas aceitas.');
+  const pending = requirements.map(r => r.id).filter(id => !selectedIds.includes(id) && !completed.includes(id));
+  const covers = pending.length ? selectedIds : requirements.map(r => r.id);
+  if (items.length === 1) {
+    const decision = items[0];
+    const selected = requirements.find(r => r.id === decision.requirementId)!;
+    const plan = planSchema.parse({
+      title: previous?.title ?? request.message.slice(0, 120),
+      summary: `Lote verificável: ${decision.title}. ${pending.length} requisito(s) ainda pendente(s).`,
+      requirements,
+      assumptions: ['Aceite de lote parcial não encerra o objetivo. Cada lote preserva a candidata anterior verificada.'],
+      approachChange: previous ? decision.action : '',
+      incremental: {version: 1, selectedRequirementId: decision.requirementId, completedRequirementIds: completed, pendingRequirementIds: pending},
+      tasks: [{
+        key: 'deliver', title: decision.title, agentId: decision.agentId, stage: 'work',
+        baseWorkspace: request.workspaces[0], covers: [decision.requirementId],
+        ...(decision.writePaths?.length ? { writePaths: decision.writePaths } : {}),
+        description: `${decision.action}\nEntregue integralmente este requisito: ${selected.description}\nReproduza o defeito antes de corrigir quando aplicável; execute os controles: ${decision.verification}\nPreserve funcionalidades e mudanças dos lotes anteriores. Registre comandos, resultados e limitações em evidence/delivery.json. O campo passed só pode ser true após verificar a entrega; não basta produzir um plano ou relatório.`,
+        criteria: [{id:'delivery',label:'Entrega implementada e controles executados',type:'json_field',name:'delivery.json',field:'passed',equals:true}],
+      }, {
+        key:'verify',title: pending.length ? 'Verificar lote e regressões' : 'Verificar entrega completa',agentId:'qa.integration',stage:'verify',
+        baseWorkspace:request.workspaces[0],sourceTask:'deliver',dependencies:['deliver'],covers,
+        description:`Verifique independentemente a candidata imutável e repita os controles: ${decision.verification}\n${pending.length ? 'Este aceite cobre apenas o lote selecionado, não encerra o objetivo. Verifique também regressões das entregas anteriores.' : 'Esta é a verificação final: comprove TODOS os requisitos do objetivo na mesma candidata acumulada, incluindo os lotes anteriores.'}\nInspecione evidências reais, registre comandos e resultados em evidence/verification.json. passed deve ser false se houver falhas, critérios não verificados ou evidência ausente. Não repare a candidata.`,
+        criteria:[{id:'verified',label:'Verificação independente da candidata',type:'json_field',name:'verification.json',field:'passed',equals:true}],
+      }],
+    });
+    return bindDeliveryFeedback(plan,reports);
+  }
+  const seenPaths: { idx: number; path: string }[] = [];
+  for (const [idx, item] of items.entries()) {
+    if (!item.writePaths?.length)
+      throw new DomainError('PLAN_INVALID', 'Entregas paralelas no mesmo lote exigem writePaths explícitos e disjuntos.');
+    for (const rawPath of item.writePaths) {
+      const norm = rawPath.replace(/\/+$/, '');
+      if (seenPaths.some(other => other.idx !== idx && (other.path === norm || other.path.startsWith(norm + '/') || norm.startsWith(other.path + '/'))))
+        throw new DomainError('PLAN_INVALID', 'Entregas paralelas no mesmo lote exigem writePaths explícitos e disjuntos.');
+      seenPaths.push({ idx, path: norm });
+    }
+  }
+  const workTasks = items.map((item, idx) => {
+    const selected = requirements.find(r => r.id === item.requirementId)!;
+    return {
+      key: `deliver-${idx + 1}`,
+      title: item.title,
+      agentId: item.agentId,
+      stage: 'work' as const,
+      baseWorkspace: request.workspaces[0],
+      covers: [item.requirementId],
+      writePaths: item.writePaths!,
+      description: `${item.action}\nEntregue integralmente este requisito: ${selected.description}\nEscopo exclusivo de escrita desta frente paralela: ${item.writePaths!.join(', ')}\nReproduza o defeito antes de corrigir quando aplicável; execute os controles: ${item.verification}\nPreserve funcionalidades e mudanças dos lotes anteriores. Registre comandos, resultados e limitações em evidence/delivery.json. O campo passed só pode ser true após verificar a entrega; não basta produzir um plano ou relatório.`,
+      criteria: [{id:'delivery',label:'Entrega implementada e controles executados',type:'json_field' as const,name:'delivery.json',field:'passed',equals:true}],
+    };
+  });
+  const combinedVerification = items.map(i => `[${i.requirementId}] ${i.verification}`).join(' | ');
+  const combinedWritePaths = [...new Set(items.flatMap(i => i.writePaths ?? []))];
   const plan = planSchema.parse({
     title: previous?.title ?? request.message.slice(0, 120),
-    summary: `Lote verificável: ${decision.title}. ${pending.length} requisito(s) ainda pendente(s).`,
+    summary: `Janela paralela verificável (${items.length} entregas): ${items.map(i => i.title).join('; ')}. ${pending.length} requisito(s) ainda pendente(s).`,
     requirements,
-    assumptions: ['Aceite de lote parcial não encerra o objetivo. Cada lote preserva a candidata anterior verificada.'],
-    approachChange: previous ? decision.action : '',
-    incremental: {version: 1, selectedRequirementId: decision.requirementId, completedRequirementIds: completed, pendingRequirementIds: pending},
-    tasks: [{
-      key: 'deliver', title: decision.title, agentId: decision.agentId, stage: 'work',
-      baseWorkspace: request.workspaces[0], covers: [decision.requirementId],
-      description: `${decision.action}\nEntregue integralmente este requisito: ${selected.description}\nReproduza o defeito antes de corrigir quando aplicável; execute os controles: ${decision.verification}\nPreserve funcionalidades e mudanças dos lotes anteriores. Registre comandos, resultados e limitações em delivery.json. O campo passed só pode ser true após verificar a entrega; não basta produzir um plano ou relatório.`,
-      criteria: [{id:'delivery',label:'Entrega implementada e controles executados',type:'json_field',name:'delivery.json',field:'passed',equals:true}],
-    }, {
-      key:'verify',title: pending.length ? 'Verificar lote e regressões' : 'Verificar entrega completa',agentId:'qa.integration',stage:'verify',
-      baseWorkspace:request.workspaces[0],sourceTask:'deliver',dependencies:['deliver'],covers,
-      description:`Verifique independentemente a candidata imutável e repita os controles: ${decision.verification}\n${pending.length ? 'Este aceite cobre apenas o lote selecionado, não encerra o objetivo. Verifique também regressões das entregas anteriores.' : 'Esta é a verificação final: comprove TODOS os requisitos do objetivo na mesma candidata acumulada, incluindo os lotes anteriores.'}\nInspecione evidências reais, registre comandos e resultados em verification.json. passed deve ser false se houver falhas, critérios não verificados ou evidência ausente. Não repare a candidata.`,
-      criteria:[{id:'verified',label:'Verificação independente da candidata',type:'json_field',name:'verification.json',field:'passed',equals:true}],
-    }],
+    assumptions: ['Aceite de lote parcial não encerra o objetivo. Entregas paralelas têm writePaths disjuntos, integração explícita e verificação independente.'],
+    approachChange: previous ? items.map(i => i.action).join(' | ').slice(0, 4000) : '',
+    incremental: {
+      version: 1,
+      selectedRequirementId: selectedIds[0],
+      selectedRequirementIds: selectedIds,
+      completedRequirementIds: completed,
+      pendingRequirementIds: pending,
+    },
+    tasks: [
+      ...workTasks,
+      {
+        key: 'integrate',
+        title: 'Integrar entregas paralelas do lote',
+        agentId: 'engineering.integration',
+        stage: 'integrate',
+        baseWorkspace: request.workspaces[0],
+        dependencies: workTasks.map(w => w.key),
+        covers: selectedIds,
+        writePaths: combinedWritePaths,
+        description: `Aplique os patches canônicos (changes.patch em /home/agent/inputs) das tarefas aceitas deste lote (${workTasks.map(w => w.key).join(', ')}) sobre a base comum sem omitir nenhuma alteração.\nExecute os controles combinados: ${combinedVerification}\nPreserve todas as entregas dos lotes anteriores e registre o resultado real da integração em evidence/delivery.json com passed:true somente após comprovar todos os controles combinados.`,
+        criteria: [{id:'integrated',label:'Patches integrados e controles combinados executados',type:'json_field',name:'delivery.json',field:'passed',equals:true}],
+      },
+      {
+        key: 'verify',
+        title: pending.length ? 'Verificar lote integrado e regressões' : 'Verificar entrega completa',
+        agentId: 'qa.integration',
+        stage: 'verify',
+        baseWorkspace: request.workspaces[0],
+        sourceTask: 'integrate',
+        dependencies: ['integrate'],
+        covers,
+        description: `Verifique independentemente a candidata integrada imutável e repita os controles combinados: ${combinedVerification}\n${pending.length ? 'Este aceite cobre apenas a janela selecionada, não encerra o objetivo. Verifique também regressões das entregas anteriores.' : 'Esta é a verificação final: comprove TODOS os requisitos do objetivo na mesma candidata acumulada, incluindo os lotes anteriores.'}\nInspecione evidências reais, registre comandos e resultados em evidence/verification.json. passed deve ser false se houver falhas, critérios não verificados ou evidência ausente. Não repare a candidata.`,
+        criteria: [{id:'verified',label:'Verificação independente da candidata',type:'json_field',name:'verification.json',field:'passed',equals:true}],
+      },
+    ],
   });
   return bindDeliveryFeedback(plan,reports);
 }
@@ -100,15 +205,19 @@ export async function verifiedBatch(db: DB, goalId: string, revision: number) {
     a.id candidate_artifact_id,a.digest candidate_digest
     FROM tasks t LEFT JOIN runs r ON r.task_id=t.id AND r.attempt=t.attempt_count
     LEFT JOIN LATERAL(SELECT id,digest FROM artifacts WHERE run_id=r.id AND name='candidate.json' ORDER BY created_at DESC,id DESC LIMIT 1)a ON true
-    WHERE t.goal_id=$1 AND t.plan_revision=$2 AND t.stage IN('work','verify') AND t.state<>'superseded'`, [goalId,revision])).rows;
+    WHERE t.goal_id=$1 AND t.plan_revision=$2 AND t.stage IN('work','integrate','verify') AND t.state<>'superseded'`, [goalId,revision])).rows;
   const verifier = tasks.find(t => t.stage === 'verify');
-  if (tasks.length !== 2 || !verifier || tasks.some(t => t.state !== 'accepted' || t.run_state !== 'submitted' || t.passed !== true) ||
+  const integrator = tasks.find(t => t.stage === 'integrate');
+  const workers = tasks.filter(t => t.stage === 'work');
+  const expectedCount = integrator ? workers.length + 2 : 2;
+  if (!workers.length || tasks.length !== expectedCount || !verifier ||
+      tasks.some(t => t.state !== 'accepted' || t.run_state !== 'submitted' || t.passed !== true) ||
       !verifier.execution?.sourceWorkspace || tasks.some(t => !t.candidate_artifact_id)) return null;
   if ((await db.query(`SELECT 1 FROM runs r JOIN tasks t ON t.id=r.task_id WHERE t.goal_id=$1
       AND (r.state IN('queued','running','cancelling','reconciling') OR EXISTS(SELECT 1 FROM leases l WHERE l.run_id=r.id)) LIMIT 1`,[goalId])).rowCount) return null;
   return { taskId:verifier.id, runId:verifier.run_id, sourceWorkspace:verifier.execution.sourceWorkspace,
     candidateArtifactId:verifier.candidate_artifact_id,candidateDigest:verifier.candidate_digest,
-    verificationAcceptanceId:verifier.acceptance_id,workRunId:tasks.find(t=>t.stage==='work')?.run_id };
+    verificationAcceptanceId:verifier.acceptance_id,workRunId:(integrator ?? workers[0])?.run_id };
 }
 
 export async function queueNextDelivery(db: DB, objective: any, previous: ProposedPlan) {
@@ -139,8 +248,10 @@ export async function assertIncrementalAuthority(db: DB, run: any, plan: Propose
     throw new DomainError('REQUIRED_CONTEXT','A revisão não pode omitir o feedback persistido dos executores e do QA.');
   const advance = !!run.feedback?.incrementalAdvance;
   const { completed, eligible } = deliveryFrontier(run.request, previous, advance);
-  const expectedPending = plan.requirements.map(r => r.id).filter(id => !completed.includes(id) && id !== plan.incremental!.selectedRequirementId);
-  if (!eligible.includes(plan.incremental.selectedRequirementId) ||
+  const selectedIds = selectedRequirementIds(plan.incremental);
+  const expectedPending = plan.requirements.map(r => r.id).filter(id => !completed.includes(id) && !selectedIds.includes(id));
+  if (!selectedIds.length || new Set(selectedIds).size !== selectedIds.length ||
+      selectedIds.some(id => !eligible.includes(id)) ||
       JSON.stringify(completed) !== JSON.stringify(plan.incremental.completedRequirementIds) ||
       JSON.stringify(expectedPending) !== JSON.stringify(plan.incremental.pendingRequirementIds))
     throw new DomainError('PLAN_INVALID','Cobertura incremental não corresponde ao estado persistido.');

@@ -27,6 +27,17 @@ class WorkspaceContracts(unittest.TestCase):
         self.assertEqual(m.inspect({'workspace':'test/other'})['candidateDigest'],evidence['candidateDigest'])
         (one/'evidence/report.json').write_text('{}')
         self.assertEqual(m.inspect({'workspace':'test/one'})['candidateDigest'],evidence['candidateDigest'])
+    def test_generated_test_data_symlinks_do_not_block_clone_or_inspect(self):
+        gen=self.base/".local-test/artifacts";gen.mkdir(parents=True)
+        (gen/"link").symlink_to("/etc/hostname")
+        (self.base/"test-results").mkdir();(self.base/"test-results/report.html").write_text("x")
+        self.clone("one")
+        self.assertFalse((m.ROOT/"test/one/.local-test").exists())
+        self.assertFalse((m.ROOT/"test/one/test-results").exists())
+        before=m.inspect({"workspace":"test/one"})["candidateDigest"]
+        gen2=m.ROOT/"test/one/.local-test/artifacts";gen2.mkdir(parents=True)
+        (gen2/"link").symlink_to("/etc/hostname")
+        self.assertEqual(m.inspect({"workspace":"test/one"})["candidateDigest"],before)
     def test_source_symlinks_are_rejected(self):
         (self.base/'escape').symlink_to('/etc/hostname')
         with self.assertRaisesRegex(ValueError,'SOURCE_SYMLINK'):self.clone('one')

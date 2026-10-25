@@ -64,6 +64,17 @@
   border-radius: 50%;
   margin-right: 6px;
 }
+.operation-productivity-line {
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #101a29;
+  color: #b9c9de;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-x: auto;
+  white-space: nowrap;
+}
 .operation-kpis {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

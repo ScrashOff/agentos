@@ -70,6 +70,7 @@ export const planSchema = z.object({
   incremental: z.object({
     version: z.literal(1),
     selectedRequirementId: z.string(),
+    selectedRequirementIds: z.array(z.string()).min(1).max(6).optional(),
     completedRequirementIds: z.array(z.string()).max(30),
     pendingRequirementIds: z.array(z.string()).max(30),
   }).strict().optional(),
@@ -195,16 +196,38 @@ export function validatePlan(
   }
   const incremental = plan.incremental;
   if (incremental) {
-    const partition = [...incremental.completedRequirementIds, incremental.selectedRequirementId, ...incremental.pendingRequirementIds];
+    const selectedIds = incremental.selectedRequirementIds ?? [incremental.selectedRequirementId];
+    const partition = [...incremental.completedRequirementIds, ...selectedIds, ...incremental.pendingRequirementIds];
     if (request.mode !== 'execute' || request.workspaces.length !== 1 ||
+        selectedIds[0] !== incremental.selectedRequirementId ||
         partition.length !== plan.requirements.length || new Set(partition).size !== partition.length ||
         partition.some(id => !plan.requirements.some(r => r.id === id)))
       fail('Partição incremental inválida ou escopo não suportado.');
-    if (plan.tasks.some(t => t.stage !== 'verify' && t.covers.some(id => id !== incremental.selectedRequirementId)))
+    if (plan.tasks.some(t => t.stage !== 'verify' && t.covers.some(id => !selectedIds.includes(id))))
       fail('O lote deve implementar somente seu requisito selecionado.');
+    if (selectedIds.length > 1) {
+      const work = plan.tasks.filter(t => t.stage === 'work');
+      const seenPaths: { key: string; path: string }[] = [];
+      if (work.length !== selectedIds.length)
+        fail('O lote paralelo exige uma tarefa de entrega por requisito selecionado.');
+      for (const w of work) {
+        if (!w.writePaths.length)
+          fail('Entregas paralelas no mesmo lote exigem writePaths explícitos.', { task: w.key });
+        for (const rawPath of w.writePaths) {
+          const norm = rawPath.replace(/\/+$/, '');
+          const conflict = seenPaths.find(
+            other => other.key !== w.key && (other.path === norm || other.path.startsWith(norm + '/') || norm.startsWith(other.path + '/')),
+          );
+          if (conflict)
+            fail('Entregas paralelas no mesmo lote exigem writePaths disjuntos.', { task: w.key, conflictTask: conflict.key, writePath: rawPath });
+          seenPaths.push({ key: w.key, path: norm });
+        }
+      }
+    }
   }
+  const selectedIds = incremental ? (incremental.selectedRequirementIds ?? [incremental.selectedRequirementId]) : [];
   const requiredNow = incremental?.pendingRequirementIds.length
-    ? plan.requirements.filter(r => r.id === incremental.selectedRequirementId)
+    ? plan.requirements.filter(r => selectedIds.includes(r.id))
     : plan.requirements;
   for (const req of requiredNow)
     if (!plan.tasks.some((t) => finalValidators.has(t.key) && t.covers.includes(req.id)))

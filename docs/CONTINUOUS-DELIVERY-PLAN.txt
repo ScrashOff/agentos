@@ -1,0 +1,147 @@
+AgentOS — plano da próxima etapa: insumos, recuperação e entrega contínua
+Data: 25/10/2026. Situação: plano; os mecanismos propostos não estão implementados
+por este documento. Identidades e provas operacionais ficam fora do Git público.
+
+OBJETIVO E BASE
+
+Converter falhas detectadas em correções consumidas e verificadas pelo runtime,
+sem deixar agentes repetirem trabalho quando falta um insumo recuperável.
+O progresso é produto aceito e efeito comprovado, não chamadas ou sessões.
+
+Já disponível neste snapshot:
+- Janelas incrementais de até seis requisitos com escrita disjunta, integração
+  explícita, QA independente e cobertura persistida.
+- Contrato de entrega com campos de critério, manifesto selado e hashes.
+- Exclusão de resíduos de teste na preparação, preservando recusa de symlinks
+  de fonte; preservação de candidata aceita em recuperação incremental.
+- Reancoragem inicial, reconciliação específica de supervisor analítico sem dono
+  e correção do avanço que estava preso em feedback de planejamento falho.
+- Indicadores que distinguem sessões de chamadas e sinalizam leitura desconhecida.
+
+Ainda não demonstrado como propriedade geral: recuperação sem orientação externa,
+preservação de todas as branches parciais, refill contínuo, ganho de vazão em carga
+controlada, aplicação dos produtos no runtime e autonomia por 24 horas.
+
+P0 — INSUMO VERIFICÁVEL PARA A TAREFA CERTA
+
+Problema observado: uma tarefa precisa preservar um arquivo original pelo hash,
+mas esse arquivo existe somente fora da sandbox. A entrega negativa identifica
+essa falta; retries no mesmo ambiente continuam sem a entrada. Aumentar modelos,
+timeouts ou mounts não resolve a causa.
+
+Entregar:
+1. Pedido persistido de insumo com papel, critério, origem autorizada, digest,
+   destino consumidor e vínculo exato de tarefa/run/fence/candidata.
+2. Controlador recupera a origem permitida, verifica bytes/tamanho/tipo/hash,
+   publica referência imutável e registra proveniência. Nunca aceita instrução
+   do worker como autoridade para ler qualquer caminho do host.
+3. Disponibilizar somente essa entrada em modo de leitura, pela cadeia existente
+   de artefatos/contexto e na fronteira permitida da execução. Não editar uma
+   candidata congelada ou a sandbox de um ator vivo silenciosamente.
+4. Mesmo pedido/mesmo hash não duplica importação nem dispara novos diagnósticos.
+   Se o insumo não existir, preservar pendência explícita com dono e evidência.
+
+Reutilizar server/execution-inputs.ts, artifact-input-bundle, seleção de inputs e
+contratos de operações/recuperação. Revisar as interfaces antes de criar um novo
+serviço. Nenhuma ampliação geral de mounts ou desativação da guarda de symlinks.
+
+Provas obrigatórias:
+- falta de arquivo -> pedido -> entrada canônica verificada -> consumidor retoma;
+- hash divergente, symlink de escape, origem não autorizada e arquivo ausente
+  continuam negativos; nenhuma substituição por equivalente funcional;
+- retry, pedido duplicado, cancelamento e execução incerta conservam identidade;
+- original não é editado e nenhum critério é enfraquecido.
+
+P1 — SUPERVISÃO COM DECISÃO APLICADA E MUDANÇA DE HIPÓTESE
+
+Separar transporte/provedor, ambiente de QA, falta de insumo, implementação e
+contrato de entrega. Uma entrega passada:false por entrada ausente deve chegar
+ao dono dessa entrada, não virar repetição integral da implementação.
+
+Persistir causa + assinatura de evidência + consumidor + hipótese. Com a mesma
+causa e sem nova evidência, agregar a revisão em vez de criar trabalho equivalente.
+Uma longa execução pode continuar saudável: tempo sozinho não autoriza término.
+Compare avanço material, evidência nova e resultado da orientação consumida.
+
+O supervisor pode orientar ou pedir contexto dentro do papel existente. Quando
+for necessária nova tentativa/fonte, usar reconciliação e recuperação canônicas.
+Nunca apagar lease, forjar parada ou reutilizar fence para aparentar progresso.
+
+Fechar a causa somente quando a ação tiver recibo aplicado e o consumidor/QA
+confirmar o efeito esperado. Testar falha controlada em ambiente isolado, sem
+instrução externa que já forneça a solução. Registrar intervenções do operador.
+
+P1 — FEEDBACK E CANDIDATAS: IDENTIDADE, NÃO APENAS CRONOLOGIA
+
+O remendo atual evita impasse de avanço por feedback antigo preso a um planner
+falho, mas um plano posterior concluído não comprova sozinho consumo do feedback.
+Estudar vínculo explícito feedback -> contexto congelado -> plano aplicado ->
+work/QA -> critério tratado. O estado pode ser pending/bound/applied/verified,
+ou adaptação equivalente das entidades existentes, sem criar um segundo dono.
+
+Preservar todos os ramos parciais aceitos de uma janela. Selecionar um integrador
+antigo por prioridade de etapa ou a branch mais recente por horário pode perder
+mudanças. Usar base/ancestralidade, cobertura, patches e candidata composta.
+
+Testes discriminantes: planner posterior que omite o feedback; feedback tardio;
+plano concluído mas não aplicado; uma de duas branches concluída; integrador de
+revisão antiga; reparo posterior; reinício com evento pendente. Requisitos e
+contraexemplos continuam íntegros e não há bloqueio permanente nem falso avanço.
+
+P2 — PUBLICAÇÃO E QA DA CANDIDATA EXATA
+
+Work aceito não significa fonte implantada. QA parcial informa suas limitações.
+Provar uso real do novo código pelo runtime, executar validação PostgreSQL na
+cadeia protegida quando exigida, publicar a candidata validada e observar efeito.
+Identidade de fonte, patches, base, testes, QA e publicação precisa conferir.
+Nenhum deploy paralelo ou publicação de branch parcial para declarar conclusão.
+
+P2 — MÉTRICA REAL E REPOSIÇÃO PRODUTIVA
+
+Conectar gate global ao payload com origem/horário e prazo de validade. Sem leitura
+atual, mostrar desconhecido; nunca inferir chamadas pela contagem de runs. Valor
+acima do teto deve permanecer visível. Separar global de objetivo e produtos
+finais de aceites de work/integração/coordenação.
+
+Vaga + tarefa pronta: scheduler despacha sem LLM. Cobertura pendente sem backlog
+útil: evento persistido e agregado pede decomposição ao único planner do objetivo.
+Medir a barreira de lote existente antes de substituí-la. Evoluir para reposição
+por unidade quando houver independência real, mantendo integração exclusiva por
+candidata, workspaces isolados, conflitos explícitos e justiça para QA/recuperação.
+Até doze sessões lógicas, nunca mais de seis chamadas GLM globais em todos os papéis.
+
+P3 — QUALIFICAÇÃO QUE PODE REPROVAR
+
+Congele cenários/avaliador fora do escopo de escrita dos workers. Manter requisitos
+de cobertura de cada objetivo; quando exigidos 20 cenários x 3 variantes, fornecer
+resultado por caso/variante com falhas e pendências no denominador.
+
+Comparar uma, três e seis frentes sobre carga equivalente, mesma versão/base e
+critérios. Separar aquecimento e orientação externa. Métricas: produtos com QA/h,
+tempo até aceite, elegível->início, tempo por fase, chamadas/tentativas por produto,
+concorrência real, erros, falsos aceites, intervenções e efeitos duplicados.
+
+Metas propostas, não resultados demonstrados:
+- seis chamadas no máximo, incluindo cancelamento/retry e todos os papéis;
+- p95 elegível->início <=10 s quando houver vaga e recursos;
+- ociosidade por defeito de despacho <5% do tempo realmente elegível;
+- >=2x produtos com QA/h em três frentes contra serial equivalente, sem aumento
+  de falsos aceites/intervenções; justificar quando a carga não paraleliza;
+- zero falsos aceites nos negativos conhecidos e zero duplicação de efeitos;
+- recuperação controlada sem instrução externa para continuar.
+
+Observar primeiro 60–90 minutos e depois 24 h, com demanda útil suficiente.
+Conclusão do backlog não é falha nem motivo para inventar trabalho. Persistir
+supervisão e resultados no servidor; timer ativo não é a evidência do resultado.
+
+ARMAZENAMENTO E ENTREGA
+
+Medir bytes por tentativa, dependências repetidas e snapshots; retenção só remove
+dados sem referências, de dono conhecido, com parada comprovada e política clara.
+Não apagar evidência para esconder crescimento, nem tornar cache mutável comum
+entre tentativas. Operação e testes rodam no servidor, em ambientes separados.
+
+Cada mudança tem candidato/commit, hipótese, teste antes/depois, resultado e limite.
+Registrar baseline, execução, intervenções, hashes e próxima observação. Segredos,
+endereços reais, dados privados e arquivos operacionais ficam fora deste Git.
+Nenhum dos mecanismos futuros deste plano foi implantado ao escrever este arquivo.

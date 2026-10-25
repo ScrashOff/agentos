@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Activity, CheckCircle2, ChevronRight, Clock, AlertCircle } from 'lucide-react';
 import {
   operationGames,
+  operationProductivityLine,
   operationWorkforce,
   supervisionHealthy,
   taskFlow,
@@ -143,6 +144,9 @@ export function OperationBoard({
               {healthy ? 'Supervisão ativa' : 'Supervisão indisponível'}
             </span>
           </header>
+          <div className="operation-productivity-line" aria-label="Métrica de produtividade">
+            {operationProductivityLine(detail, data).line}
+          </div>
           {managerEnabled && (
             <details className="operation-manager">
               <summary>

@@ -11,8 +11,13 @@ complete-plan path. Workforce-owned objectives retain their existing owner;
 this rollout does not transfer a live task graph or run two coordinators.
 
 The model chooses one eligible requirement and returns title, action,
-verification and an existing agent ID. The controller creates work -> verify,
-keeps all original requirements, and records completed and pending coverage.
+verification and an existing agent ID, or selects two to six independent
+requirements with explicit, disjoint workspace-relative writePaths. For one
+item the controller creates work -> verify. For several items it creates
+parallel work -> integrate -> verify, with integration receiving every patch
+over the common base. Missing or overlapping write scopes are rejected.
+The controller keeps all original requirements and records completed, selected
+and pending coverage, including selectedRequirementIds for parallel windows.
 An independent final verifier checks ALL requirements on the accumulated
 candidate. A partial lot is never counted as a completed objective.
 
@@ -20,12 +25,15 @@ After a lot is accepted, the existing reconciler checks current runs,
 acceptances, artifact IDs/hashes, leases and the candidate's source. It queues
 the next decision transactionally with a unique trigger. A second dispatcher
 or restart cannot duplicate this handoff. The next lot starts from the verified
-candidate. Rejected QA stays in the existing recovery path and cannot advance
+candidate. This is still a batch barrier: integration waits for all work in
+the window, and a later window waits for its integration and QA. It is not
+continuous per-unit refill. Rejected QA stays in recovery and cannot advance
 coverage. Pauses, cancellation, uncertain termination and stale fences remain
 effective. No truncated JSON becomes runnable work.
 
-The compact decision has a 120-second provider deadline and 2200-token response
-envelope. These are per-call bounds, not an objective token budget. Confirmed
+The compact decision uses the provider/transport timing policy and an
+8192-token output envelope. These are per-call bounds, not an objective token
+budget. Confirmed
 provider timeouts use bounded exponential backoff; uncertain stops do not
 automatically retry. Previously failed initial plans get one durable migration
 to the new contract. Ordinary already-authorized tasks need no new approval.
@@ -35,7 +43,12 @@ and selected as whole entries within 4000 characters. The model never receives
 the complete prior DAG/history just to select the next lot.
 
 Telemetry retains every planning attempt, including timeouts; the UI identifies
-incremental coverage. The independent observer distinguishes verified lots
+incremental coverage. The productivity line separates logical sessions from
+global model calls. It reports unknown when no gate reading is available,
+does not saturate over-limit values, and counts unique completed requirements
+instead of repeated accepted revisions. Gate telemetry still needs its own
+end-to-end freshness and source qualification.
+The independent observer distinguishes verified lots
 from final deliveries and separates goal activity from global activity.
 External qualification criteria and scoring are unchanged. Controller tests
 and operator-assisted bootstrap are not autonomous delivery evidence.
@@ -50,6 +63,18 @@ https://github.com/ruvnet/ruflo/tree/588ef6b36e95b953bc74d4536dc6a57b6351ea71
 plugins/ruflo-console/hooks/goap.ts
 plugins/ruflo-console/hooks/data/ap-loop.ts
 
-Not implemented in this slice: automatic tuning trials/rollback, parallel
-incremental lots, multi-workspace incremental integration, and external
+Workspace preparation excludes generated test output while retaining the
+rejection of symlinks in actual source. Replanning can preserve an earlier
+accepted candidate instead of a failed workspace's runtime residue. This
+does not qualify arbitrary selection of a partial parallel branch as the
+accumulated source: branch ancestry and integration still need verification.
+
+Known review item: pending feedback can currently be treated as superseded
+when a later planning run completed. A timestamp alone is not evidence that
+the exact counterexample reached implementation and QA. The next stage must
+qualify explicit feedback consumption without reintroducing a permanent
+advance deadlock. See CONTINUOUS-DELIVERY-PLAN.txt.
+
+Not implemented in this slice: continuous per-unit refill, automatic tuning
+trials/rollback, multi-workspace incremental integration, and external
 qualification of long-running autonomy. These require their own evidence.

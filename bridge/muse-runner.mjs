@@ -11,7 +11,7 @@ import { materializeSourceInputs } from './source-inputs.mjs';
 import {bindCompositionInputs} from './composition-inputs.mjs';
 import { preserveRuntimeArtifactClaims } from './runtime-artifacts.mjs';
 import { museTaskDeliveryInstruction } from './task-delivery-contract.mjs';
-import { deliveryContract, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstruction } from './delivery-manifest.mjs';
+import { deliveryContract, extractPromptJsonFields, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstruction } from './delivery-manifest.mjs';
 
 const DATA = '/var/lib/agentos-bridge/worker-runs';
 const ROOT = '/srv/agentos/workspaces';
@@ -98,7 +98,7 @@ async function executeMuse(params, signal, account, emit) {
   }
   const unit = `agentos-run-${params.runId}`,
     internal = new AbortController();
-  const outputContract = deliveryContract(params.runId, params.deliveryContract?.artifacts?.map(a => a.name) ?? []);
+  const outputContract = deliveryContract(params.runId, params.deliveryContract?.artifacts?.map(a => a.name) ?? [], extractPromptJsonFields(params.prompt));
   const combined = AbortSignal.any([signal, internal.signal]);
   const events = new MuseEvents(params.runId);
   let child,
