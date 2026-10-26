@@ -87,5 +87,8 @@ Subtarefas por requisito, dependências e recuperação supervisionada do planne
 estão descritas em [PLANNING-SUBTASKS.txt](docs/PLANNING-SUBTASKS.txt).
 O goal de desenvolvimento, as provas de autonomia e os limites do acompanhamento
 estão em [AUTONOMY-QUALIFICATION.txt](docs/AUTONOMY-QUALIFICATION.txt).
+A conferência offline dos recibos determinísticos está em
+[QUALIFICATION-EVIDENCE-INSPECTOR.txt](docs/QUALIFICATION-EVIDENCE-INSPECTOR.txt);
+integridade desses arquivos não comprova autonomia real.
 
 O desenho foi estudado a partir de [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), [ShackleAI Orchestrator](https://github.com/shackleai/orchestrator), [OSymandias](https://github.com/andreisilva1/OSymandias) e [Laya](https://github.com/NandhaKishorM/laya). Esses projetos são referências e integrações separadas; suas contas, runtimes e serviços não são distribuídos aqui.

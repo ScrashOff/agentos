@@ -1,0 +1,50 @@
+Offline qualification evidence inspector
+
+scripts/inspect-qualification-evidence.ts independently reads the deterministic
+20x3 executor report, aggregate receipt and all sixty per-trial JSON receipts.
+It imports no application, database, account bridge or candidate implementation.
+Run with Node24 in an authorized environment with read access to the evidence.
+
+Example (placeholders; supply the actual externally trusted identities):
+
+node scripts/inspect-qualification-evidence.ts \
+  --workspace /path/to/isolated-candidate \
+  --candidate /external/read-only/candidate.json \
+  --candidate-sha256 CANONICAL_MANIFEST_SHA256 \
+  --fixed-contract-sha256 FIXED_CONTRACT_SHA256 \
+  --output /external/reviews/inspection.json
+
+The manifest must be outside the worker workspace. The fixed-contract digest
+and manifest digest must come from the trusted controller/evaluator, never be
+derived solely from a worker claim. Output is optional, must be external to the
+workspace and is created exclusively; an existing evidence file is not replaced.
+Exit0 means the inspected integrity/structure checks passed. Exit1 means a
+negative check, unreadable evidence, invalid argument or failed inspection.
+
+Checks include the manifest-listed source hashes, the fixed-contract digest,
+aggregate/report/receipt hashes, unique C01-V1..C20-V3 identities, deadlines,
+required trace fields, counts recomputed from disk and the denominator of60.
+Missing, duplicated, forged, symlinked and inconsistent evidence fails. Hashes
+use the producer's JSON.stringify serialization, not Python json.dumps defaults.
+
+The scope is deliberately explicit: structuralEvidencePassed is NOT autonomy
+qualification. The inspector does not execute scenario actions, prove that a
+worker's assertions are semantically true, observe model calls, establish a
+24-hour window or prove absence of every unlisted workspace file. Negative-test
+declarations and worker-allocation declarations remain declarations here.
+autonomyQualified and observation24hProved always remain false.
+
+The Cxx-Vy deterministic fixture IDs are not interchangeable with canonical
+live-cohort trial IDs. Do not rename these receipts into live-evaluator results
+or turn expected negatives/pending cases into autonomous successes. Real trials
+require separate controller/run/candidate provenance and external evaluation.
+
+This tool writes no task state, acceptance, publication or evaluation-cohort
+result. Independent QA and the protected release chain retain their authority.
+Keep the evaluator copy outside worker write scopes. Retain rejected outputs
+and classify failure versus unavailable observation without relaunching a worker.
+
+Validation: tests/qualification-evidence.test.ts exercises intact evidence and
+adversarial mutations. Run project tests on a provisioned isolated development
+server. A focal offline Vitest run can select this pure test file with no DB
+setup; that is not a claim that the full PostgreSQL suite ran or passed.
