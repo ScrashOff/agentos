@@ -12,6 +12,9 @@ export const workspaceId = z
 export const objectiveSchema = z
   .object({
     message: z.string().trim().min(5).max(30000),
+    // A long prompt makes a useless name. Callers that have one send it; the
+    // fallback stays the opening of the message, as before.
+    title: z.string().trim().min(3).max(120).optional(),
     project: z.string().regex(/^[a-z0-9_-]{1,80}$/),
     mode: z.enum(['plan', 'execute']),
     workspaces: z.array(workspaceId).min(1).max(10),

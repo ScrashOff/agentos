@@ -1112,15 +1112,22 @@ export async function snapshot() {
         'settings',
       ].map((table) =>
         pool.query(
-          (table === 'runs'
-            ? 'SELECT id,task_id,attempt,state,worker_id,account_id,runtime,agent_version,created_at,started_at,finished_at,heartbeat_at,context_id,summary,error_code,usage,checkpoint,model FROM '
-            : 'SELECT * FROM ') +
-            table +
-            (table === 'events'
-              ? ' ORDER BY id DESC LIMIT 100'
-              : table === 'contexts'
-                ? ' ORDER BY created_at DESC LIMIT 100'
-                : ''),
+          // A goal stays 'active' while its objective waits for a person, so the
+          // panel cannot tell "being worked on" from "parked" without the
+          // objective's own status. Carry it alongside instead of guessing.
+          table === 'goals'
+            ? `SELECT g.*, o.status objective_status, o.reason objective_reason,
+                 o.revision objective_revision, o.mode objective_mode
+               FROM goals g LEFT JOIN objectives o ON o.id=g.id`
+            : (table === 'runs'
+                ? 'SELECT id,task_id,attempt,state,worker_id,account_id,runtime,agent_version,created_at,started_at,finished_at,heartbeat_at,context_id,summary,error_code,usage,checkpoint,model FROM '
+                : 'SELECT * FROM ') +
+              table +
+              (table === 'events'
+                ? ' ORDER BY id DESC LIMIT 100'
+                : table === 'contexts'
+                  ? ' ORDER BY created_at DESC LIMIT 100'
+                  : ''),
         ),
       ),
     );

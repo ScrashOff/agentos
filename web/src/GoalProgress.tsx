@@ -18,6 +18,7 @@ import {
 } from './task-attention';
 import { ObjectivePlan } from './ObjectivePlan';
 import { OperationBoard } from './OperationBoard';
+import { goalStanding } from './goal-standing.js';
 import { taskFlow } from './operation-state';
 
 type Row = Record<string, any>;
@@ -292,6 +293,12 @@ export function GoalDirectory({
         const hasDelivery = Number.isInteger(delivery?.total) && delivery.total > 0 &&
           Number.isInteger(delivery.verified) && delivery.verified >= 0 && delivery.verified <= delivery.total;
         const focus = attention[0] ?? active[0];
+        const ready = tasks.filter((t: Row) => t.state === 'ready').length;
+        const standing = goalStanding(goal, {
+          active: active.length,
+          attention: actions.length,
+          ready,
+        });
         return (
           <button
             className="operation-card"
@@ -300,17 +307,8 @@ export function GoalDirectory({
           >
             <div className="operation-top">
               <span>{goal.project}</span>
-              <span>
-                {goal.merged_into
-                  ? 'Consolidado'
-                  : goal.state === 'paused'
-                    ? 'Pausado'
-                    : goal.state === 'completed'
-                      ? 'Concluído'
-                      : goal.state === 'cancelled'
-                        ? 'Cancelado'
-                        : 'Em andamento'}{' '}
-                <ChevronRight size={15} />
+              <span className={'operation-standing ' + standing.tone}>
+                {standing.label} <ChevronRight size={15} />
               </span>
             </div>
             <h3>{goal.title}</h3>
@@ -329,15 +327,11 @@ export function GoalDirectory({
               {hasDelivery && <span>{delivery.integrated}/{delivery.total} integrações validadas</span>}
             </div>
             <p>
-              {goal.merged_into
-                ? 'Tarefas e evidências reunidas na operação principal. Abrir operação.'
-                : focus
-                  ? `${taskLabel(focus.state)}: ${focus.title}`
-                  : goal.state === 'completed'
-                    ? 'Todas as etapas foram aceitas.'
-                    : goal.state === 'cancelled'
-                      ? 'Objetivo encerrado por cancelamento.'
-                      : 'Aguardando despacho das etapas elegíveis.'}
+              {/* A named step in flight is the most useful sentence; otherwise
+                  say plainly what the objective is waiting on. */}
+              {focus && !goal.merged_into
+                ? `${taskLabel(focus.state)}: ${focus.title}`
+                : standing.detail}
             </p>
             {!!actions.length && (
               <div className="operation-alerts">

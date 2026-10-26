@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { toGeneration, completion, fromMessages, messagesEvents } from './runtime-gateway.mjs';
 import { bufferedModelChannel, WORKER_MODEL_TIMEOUT_MS } from './runtime-model-channel.mjs';
+import { modelRequestTiming } from './model-request-timing.mjs';
 import { workspaceOperation } from './workspaces.mjs';
 import { materializeSourceInputs } from './source-inputs.mjs';
 import {hydrateArtifactInputBundle,referencedInputLimitBytes} from './artifact-input-bundle.mjs';
@@ -194,6 +195,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     // over the queue wait, which is the one thing a permit must cover.
     const gatedRequest = inGlmRequestLane({ accountId: params.accountId, model: params.model });
     const requestTimeout = gatedRequest ? null : AbortSignal.timeout(WORKER_MODEL_TIMEOUT_MS);
+    const timing = modelRequestTiming({ gated: gatedRequest });
     try {
       if (req.method !== 'POST' || !wire) {
         res.writeHead(404);
@@ -232,12 +234,17 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         reasoning: params.model === 'glm-5.3-flash' ? 'low' : 'high',
       });
       requests++;
+      timing.start();
       emit('MODEL_REQUEST', {
         requests,
         contextBytes: body.length,
         accountId: params.accountId,
         model: params.model,
       });
+      const gateEmit = (kind, payload) => {
+        timing.observe(kind);
+        emit(kind, payload);
+      };
       // Own admission here as well: an older long-lived bridge can load this
       // runtime while retaining its original ungated generate callback. Newer
       // bridges recognize the private symbol and do not acquire twice.
@@ -245,7 +252,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         gatedRequest ? { ...input, runId: params.runId, requestTimeoutMs: glmRequestBudgetMs() } : input,
         requestTimeout ? AbortSignal.any([channel.signal, requestTimeout]) : channel.signal,
         (requestSignal) => generate(input, requestSignal, GLM_REQUEST_ADMITTED),
-        emit,
+        gateEmit,
       );
       for (const k of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'])
         usage[k] += result.message.usage?.[k] ?? 0;
@@ -253,6 +260,11 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         requests,
         stopReason: result.message.stopReason,
         tokens: result.message.usage?.totalTokens ?? null,
+        // Self-describing: provider health is read per account, and a response
+        // that only carries a runId forces a join to learn who answered.
+        accountId: params.accountId,
+        model: params.model,
+        ...timing.sample(),
       });
       channel.finish(
         wire === 'messages'
@@ -261,7 +273,12 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
       );
     } catch (e) {
       gatewayError = channel.failureCode(requestTimeout?.aborted ? requestTimeout.reason : e);
-      emit('MODEL_ERROR', { code: gatewayError });
+      emit('MODEL_ERROR', {
+        code: gatewayError,
+        accountId: params.accountId,
+        model: params.model,
+        ...timing.sample(),
+      });
       channel.fail(gatewayError);
       // A broken provider call must not leave an apparently running, idle agent loop.
       fail(error(gatewayError));

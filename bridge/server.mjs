@@ -20,7 +20,8 @@ import path from 'node:path';
 import { sendRuntimeGuidance,readRuntimeGuidanceReceipt } from './runtime-guidance.mjs';
 import { runState, workerWorkspaces } from './runtime-runner.mjs';
 import { agyPrintRequest, parseAgyPrintResult } from './agy-print.mjs';
-import { withAccountRequestGate } from './gated-generation.mjs';
+import { GLM_REQUEST_ADMITTED, inGlmRequestLane, withAccountRequestGate } from './gated-generation.mjs';
+import { modelRequestTiming } from './model-request-timing.mjs';
 import { museLogin, museSnapshot } from './muse-accounts.mjs';
 import { resolveGenerationAccount } from './generation-account.mjs';
 import { openAICompletionsFallback } from './openai-completions-fallback.mjs';
@@ -480,6 +481,22 @@ async function generate(params, signal, emit, admission) {
     if (glmModelProfile(account.id,params.model).reasoning)
       provider = openAICompletionsFallback();
   }
+  // The worker path instruments itself in runtime-runner and passes the
+  // admission symbol; anything else reaching here is a controller call, such as
+  // planning, whose provider latency was otherwise never recorded at all.
+  const instrumented = admission !== GLM_REQUEST_ADMITTED;
+  const timing = modelRequestTiming({ gated: inGlmRequestLane(params) });
+  const report = (kind, extra) =>
+    instrumented &&
+    emit?.(kind, { accountId: account.id, model: params.model, ...extra, ...timing.sample() });
+  const gateEmit = (kind, payload) => {
+    timing.observe(kind);
+    emit?.(kind, payload);
+  };
+  if (instrumented) {
+    timing.start();
+    emit?.('MODEL_REQUEST', { accountId: account.id, model: params.model });
+  }
   return withAccountRequestGate(
     params,
     signal,
@@ -516,9 +533,22 @@ async function generate(params, signal, emit, admission) {
         throw Error(result.errorMessage ?? result.stopReason);
       return { message: result, accountId: account.id, model: params.model };
     },
-    emit,
+    gateEmit,
     undefined,
     admission,
+  ).then(
+    (result) => {
+      report('MODEL_RESPONSE', {
+        stopReason: result.message.stopReason,
+        tokens: result.message.usage?.totalTokens ?? null,
+      });
+      return result;
+    },
+    (error) => {
+      // The code only; provider bodies and messages never leave this boundary.
+      report('MODEL_ERROR', { code: error?.code ?? 'MODEL_REQUEST_FAILED' });
+      throw error;
+    },
   );
 }
 async function agyGenerate(account, params, signal) {

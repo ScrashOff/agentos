@@ -18,6 +18,17 @@ import {
 import { planningContext } from './planning-context.js';
 import { incrementalEligible, deliveryFrontier, deliveryDecisionSchema, compileDelivery, bindDeliveryFeedback, queueNextDelivery, assertIncrementalAuthority } from './incremental-planning.js';
 
+// A prompt pasted whole is not a name. Prefer an explicit title, then the first
+// meaningful line, stripped of Markdown heading and label noise.
+function objectiveTitle(request: { title?: string; message: string }) {
+  if (request.title) return request.title;
+  const line = request.message
+    .split('\n')
+    .map((text) => text.replace(/^#+\s*/, '').replace(/^PROMPT:\s*/i, '').trim())
+    .find((text) => text.length >= 3);
+  return (line ?? request.message).slice(0, 120);
+}
+
 export async function submitObjective(raw: unknown) {
   const request = objectiveSchema.parse(raw);
   checkMemoryContent(JSON.stringify(request));
@@ -48,7 +59,7 @@ export async function submitObjective(raw: unknown) {
     const id = randomUUID();
     await db.query(
       "INSERT INTO goals(id,title,description,project,state,idempotency_key) VALUES($1,$2,$3,$4,'planning',$5)",
-      [id, request.message.slice(0, 120), request.message, request.project, request.idempotencyKey],
+      [id, objectiveTitle(request), request.message, request.project, request.idempotencyKey],
     );
     await db.query(
       'INSERT INTO objectives(id,request,request_hash,mode,chat_id) VALUES($1,$2,$3,$4,$5)',

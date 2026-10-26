@@ -23,6 +23,7 @@ import { searchAgents } from './registry.js';
 import { DomainError } from './contracts.js';
 import { recallStatus } from './recall.js';
 import { syncAccounts } from './accounts.js';
+import { providerHealth, providerHealthWindowMinutes } from './provider-health-query.js';
 import { accountBridge } from './bridge.js';
 import { chatEngine, listChats, newChat, chatDetail } from './chat.js';
 import type { WorkerEngine } from './worker.js';
@@ -203,12 +204,17 @@ export function makeApp(engine?: WorkerEngine) {
     } catch (e: any) {
       error = e.message;
     }
+    const accounts = (
+      await pool.query('SELECT * FROM accounts WHERE bridge_id IS NOT NULL ORDER BY source,label')
+    ).rows;
     return {
       configured: !!config.bridgeHost,
       error,
-      accounts: (
-        await pool.query('SELECT * FROM accounts WHERE bridge_id IS NOT NULL ORDER BY source,label')
-      ).rows,
+      accounts,
+      // Whether the provider is actually answering, as opposed to whether the
+      // bridge believes it is connected. The two disagree exactly when it matters.
+      health: await providerHealth(accounts.map((a: any) => a.id)),
+      healthWindowMinutes: providerHealthWindowMinutes,
     };
   });
   app.post('/api/connections/refresh', async () => syncAccounts(true));
