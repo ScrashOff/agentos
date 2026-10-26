@@ -106,4 +106,4 @@ pendente ou não observável. O goal só termina quando todos os itens obrigató
 forem comprovados; um novo defeito relevante reabre a prova correspondente.
 
 Referências internas: CONTINUOUS-DELIVERY-PLAN.txt, PLANNING-SUBTASKS.txt,
-EVENT-DRIVEN-SUPERVISION.txt e OBJECTIVE-INPUTS.txt.
+EVENT-DRIVEN-SUPERVISION.txt, OBJECTIVE-INPUTS.txt e READONLY-QA.txt.
