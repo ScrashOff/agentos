@@ -1,0 +1,31 @@
+Verified operator inputs in planning
+===================================
+
+The same immutable, authenticated objective inputs used by workers are now
+available to a new planner generation. readObjectiveInputs verifies the stored
+receipt, original bytes and committed registration event before model dispatch.
+Neither sourceRef nor content is opened as a host path or treated as permission.
+
+Only inputs for eligible requirements enter an incremental decision. Complete
+planning uses the original requirement IDs. Newest relevant inputs receive space
+first: at most 6,000 characters per complete input and 12,000 content characters
+total. The inventory retains metadata and an explicit omission reason for every
+relevant input. Programs are never truncated into misleading fragments; invalid
+UTF-8 and binary content are omitted. An omission is not evidence of inspection.
+
+Both planner modes receive this projection independently of optional memory
+ranking. The persisted planning context records it; incremental decision events
+record input identities, SHA-256 and inclusion status without duplicating content.
+Preparation of an already persisted proposal does not regenerate it or retrofit
+new instructions into live worker attempts. Input registration still activates
+only for future plan attempts; original task scopes and acceptance stay intact.
+
+The planner must use known source layout and the actual publication chain. When
+source layout is unknown it should plan a bounded investigation before assigning
+exact implementation paths. Guidance is semantic assistance, not a deterministic
+proof that a proposed module has actual callers. Exact-candidate integration,
+independent QA and protected publication remain mandatory.
+
+This change does not inspect the entire repository automatically or certify
+unattended autonomy. Database tests mock model/bridge transport and use an isolated
+test database; they are controller contract checks, not actual provider trials.

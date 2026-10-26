@@ -6,7 +6,8 @@ import {config} from '../server/config.js';
 import {makeApp} from '../server/app.js';
 import {objectiveSchema} from '../server/objective-contracts.js';
 import {compileDelivery} from '../server/incremental-planning.js';
-import {submitObjective,claimPlanning,applyPlannedResult,reconcilePlanning} from '../server/planner.js';
+import {submitObjective,claimPlanning,applyPlannedResult,reconcilePlanning,PlanningEngine} from '../server/planner.js';
+import {accountBridge} from '../server/bridge.js';
 import {installObjectiveInputs,registerObjectiveInput,readObjectiveInputs,inputsForRequirements} from '../server/objective-inputs.js';
 import {executionInputManifest,runtimeInputs} from '../server/execution-inputs.js';
 
@@ -141,4 +142,45 @@ it('exposes registration only through authenticated API requests and returns met
     const allowed=await app.inject({method:'POST',url,payload:body,headers:{authorization:'Bearer '+config.apiToken}});
     expect(allowed.statusCode).toBe(200);expect(allowed.json().liveAttemptsChanged).toBe(false);expect(allowed.body).not.toContain(body.base64);
   }finally{await app.close();}
+});
+
+it('supplies verified operator context to the real compact planner before choosing source paths',async()=>{
+  const f=await fixture(),bytes=Buffer.from('Actual runtime source: bridge/runtime-runner.mjs. Use the registered protected release chain, not an invented pipeline.');
+  const body=request({name:'runtime-source.txt',digest:digest(bytes),base64:bytes.toString('base64')});
+  const registered=await registerObjectiveInput(f.objectiveId,body,auth);
+  await reconcilePlanning();const run=await claimPlanning();let generated=0;
+  vi.spyOn(accountBridge,'request').mockImplementation(async(method,p:any)=>{
+    if(method==='memory.search')return {items:[]};
+    if(method==='worker.workspaces')return [{id:'test/base'}];
+    if(method==='worker.prepare')return {};
+    if(method==='generate'){
+      generated++;
+      const message=JSON.parse(p.messages[0].content),entry=message.objectiveInputs.inputs[0];
+      expect(entry).toMatchObject({id:registered.inputId,digest:body.digest,content:bytes.toString()});
+      expect(p.system).toContain('not authorization');expect(p.system).toContain('bounded investigation');
+      return {message:{content:[{type:'text',text:JSON.stringify(decision)}]}};
+    }
+    throw Error('ranking fallback');
+  });
+  await new PlanningEngine().execute(run,new AbortController().signal);
+  expect(generated).toBe(1);
+  const saved=(await pool.query('SELECT state,context FROM planning_runs WHERE id=$1',[run.id])).rows[0];
+  expect(saved.state).toBe('completed');expect(saved.context.objectiveInputs.inputs[0].digest).toBe(body.digest);
+  const event=(await pool.query("SELECT payload FROM events WHERE entity_id=$1 AND kind='PLANNING_DECISION_REQUESTED'",[f.objectiveId])).rows[0].payload;
+  expect(event.objectiveInputs).toEqual([{id:registered.inputId,digest:body.digest,included:true}]);
+  expect(JSON.stringify(event)).not.toContain(bytes.toString());
+});
+
+it('fails closed before model generation when operator provenance is missing',async()=>{
+  const f=await fixture(),registered=await registerObjectiveInput(f.objectiveId,request(),auth);
+  await reconcilePlanning();const run=await claimPlanning();let generated=0;
+  await pool.query("DELETE FROM events WHERE kind='OBJECTIVE_INPUT_REGISTERED' AND payload->>'inputId'=$1",[registered.inputId]);
+  vi.spyOn(accountBridge,'request').mockImplementation(async(method)=>{
+    if(method==='memory.search')return {items:[]};if(method==='worker.workspaces')return [{id:'test/base'}];
+    if(method==='generate')generated++;throw Error('unexpected bridge method');
+  });
+  await new PlanningEngine().execute(run,new AbortController().signal);
+  expect(generated).toBe(0);
+  const failure=(await pool.query('SELECT state,error FROM planning_runs WHERE id=$1',[run.id])).rows[0];
+  expect(failure.state).toBe('failed');expect(failure.error).toContain('Proveniência da entrada ausente');
 });
