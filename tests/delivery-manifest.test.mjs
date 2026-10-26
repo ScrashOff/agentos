@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { deliveryContract, prepareDeliveryManifest, sealDeliveryManifest, collectDeliveryManifest } from '../bridge/delivery-manifest.mjs';
+import { deliveryContract, extractPromptJsonFields, deliveryManifestInstructionFor, prepareDeliveryManifest, sealDeliveryManifest, collectDeliveryManifest } from '../bridge/delivery-manifest.mjs';
 import { recoverArtifacts } from '../bridge/recover-artifacts.mjs';
 import { parseResult } from '../bridge/opencode-executor.mjs';
 import { prepareOpenCodeWorkspace } from '../bridge/opencode-preflight.mjs';
@@ -204,4 +204,36 @@ test('strict final-message parser accepts one explicit fenced envelope but never
   assert.equal(parseResult(['Completed.\n```json\n' + json + '\n```\nEvidence attached.']).summary, 'actual final');
   assert.throws(() => parseResult([json, 'The final result is not structured']), /RESULT_FORMAT/);
   assert.throws(() => parseResult(['```json\n' + json + '\n```\n```json\n' + json + '\n```']), /RESULT_FORMAT/);
+});
+
+test('validator rejects delivery-draft self-reference, manifest envelope confusion and missing required json_field while allowing passed:false', async () => {
+  const f = await fixture();
+  try {
+    const prompt = 'Task title\n\nCriteria: [{"id":"delivery","type":"json_field","name":"delivery.json","field":"passed","equals":true}]';
+    const fields = extractPromptJsonFields(prompt);
+    assert.deepEqual(fields, [{ name: 'delivery.json', field: 'passed', boolean: true }]);
+    const contract = deliveryContract(randomUUID(), ['delivery.json'], fields);
+    assert.match(deliveryManifestInstructionFor(contract), /evidence\/delivery\.json/);
+    const draftFile = path.join(f.workspace, 'evidence', 'delivery-draft.json');
+    await writeFile(draftFile, JSON.stringify({ summary: 'Draft', artifacts: [{ name: 'delivery.json', path: 'evidence/delivery-draft.json', mime: 'application/json' }] }));
+    await assert.rejects(
+      sealDeliveryManifest(f.workspace, JSON.parse(await readFile(draftFile, 'utf8')), contract),
+      { code: 'ARTIFACT_PATH', reason: 'delivery_draft_is_not_a_task_artifact' },
+    );
+    await writeFile(path.join(f.workspace, 'evidence', 'delivery.json'), JSON.stringify({ summary: 'Wrong envelope', artifacts: [] }));
+    await assert.rejects(
+      sealDeliveryManifest(f.workspace, { summary: 'Wrong envelope', artifacts: [{ name: 'delivery.json', path: 'evidence/delivery.json', mime: 'application/json' }] }, contract),
+      { code: 'RESULT_FORMAT', reason: 'artifact_contains_manifest_envelope_instead_of_criterion_report:delivery.json' },
+    );
+    await writeFile(path.join(f.workspace, 'evidence', 'delivery.json'), JSON.stringify({ note: 'missing passed' }));
+    await assert.rejects(
+      sealDeliveryManifest(f.workspace, { summary: 'Missing field', artifacts: [{ name: 'delivery.json', path: 'evidence/delivery.json', mime: 'application/json' }] }, contract),
+      { code: 'RESULT_FORMAT', reason: 'artifact_json_field_missing:delivery.json:passed' },
+    );
+    for (const passed of [false, true]) {
+      await writeFile(path.join(f.workspace, 'evidence', 'delivery.json'), JSON.stringify({ passed, checks: 38 }));
+      const sealed = await sealDeliveryManifest(f.workspace, { summary: 'Valid report', artifacts: [{ name: 'delivery.json', path: 'evidence/delivery.json', mime: 'application/json' }] }, contract);
+      assert.equal(sealed.artifacts[0].name, 'delivery.json');
+    }
+  } finally { await f.close(); }
 });

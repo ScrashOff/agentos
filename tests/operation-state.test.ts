@@ -3,6 +3,7 @@ import {
   operationGames,
   operationWorkforce,
   operationDelivery,
+  operationProductivityLine,
   taskFlow,
 } from '../web/src/operation-state';
 const now = Date.now();
@@ -318,4 +319,137 @@ it('keeps GLM sessions independent of the shared request limit without inventing
       })?.groups.find((group) => group.id === 'glm'),
     ).toMatchObject({ target: 12, requestLimit: null, running: 8 });
   }
+});
+
+it('builds the one-line productivity metric with single-cause idle block classification', () => {
+  const detail = {
+    goal: { id: 'g1', state: 'active' },
+    objective: { id: 'g1', status: 'active' },
+    tasks: [
+      { id: 't1', stage: 'work', state: 'ready', execution: { baseWorkspace: 'p/a', workspace: 'p/a1' } },
+      { id: 't2', stage: 'work', state: 'running', execution: { baseWorkspace: 'p/b', workspace: 'p/b1' } },
+      { id: 't3', stage: 'verify', state: 'accepted', execution: { baseWorkspace: 'p/c', workspace: 'p/c1' } },
+    ],
+  };
+  const activeSnapshot = {
+    settings: { 'workforce:g1': { enabled: true, glmTarget: 12, glmRequestLimit: 6 } },
+    runs: [
+      { id: 'r1', task_id: 't2', model: 'glm-5.3-flash', state: 'running' },
+      { id: 'r2', task_id: 'other', model: 'glm-5.3-flash', state: 'running' },
+    ],
+    dependencies: [],
+  };
+  expect(operationProductivityLine(detail, activeSnapshot)).toMatchObject({
+    ready: 1,
+    activeSessions: 1,
+    maxSessions: 12,
+    glmCalls: null,
+    glmOverLimit: false,
+    objectiveModelCalls: 0,
+    maxGlmCalls: 6,
+    acceptedDeliveries: 1,
+    blockReason: 'nenhum',
+    line: 'trabalho pronto: 1 | sessões ativas: 1/12 | chamadas GLM: ?/6 | entregas aceitas: 1 | bloqueio: nenhum',
+  });
+  expect(
+    operationProductivityLine(
+      { ...detail, goal: { id: 'g1', state: 'replanning' }, tasks: [] },
+      { settings: {}, runs: [], dependencies: [] },
+    ).blockReason,
+  ).toBe('planejamento');
+  expect(
+    operationProductivityLine(
+      {
+        ...detail,
+        tasks: [{ id: 't1', stage: 'verify', state: 'blocked_dependencies' }],
+      },
+      { settings: {}, runs: [], dependencies: [{ task_id: 't1', depends_on: 't0' }] },
+    ).blockReason,
+  ).toBe('dependências');
+  expect(
+    operationProductivityLine(
+      {
+        ...detail,
+        tasks: [
+          { id: 't1', stage: 'work', state: 'waiting_resource', reason: 'REBASE_CONFLICT' },
+        ],
+      },
+      { settings: {}, runs: [], dependencies: [] },
+    ).blockReason,
+  ).toBe('conflito');
+});
+it('never saturates a real gate reading and flags values above the global limit', () => {
+  const detail = {
+    goal: { id: 'g1', state: 'active' },
+    objective: { id: 'g1', status: 'active' },
+    tasks: [{ id: 't1', stage: 'work', state: 'running' }],
+    runs: [{ id: 'r1', task_id: 't1', model: 'glm-5.3-flash', state: 'running' }],
+  };
+  const over = operationProductivityLine(detail, {
+    settings: { 'glm-gate': { effectiveActive: 7, limit: 6 } },
+    runs: [],
+    dependencies: [],
+  });
+  expect(over.glmCalls).toBe(7);
+  expect(over.glmOverLimit).toBe(true);
+  expect(over.line).toContain('chamadas GLM: 7/6 (acima do limite!)');
+  const within = operationProductivityLine(detail, {
+    settings: { 'glm-gate': { effectiveActive: 3, limit: 6 } },
+    runs: [],
+    dependencies: [],
+  });
+  expect(within.glmCalls).toBe(3);
+  expect(within.glmOverLimit).toBe(false);
+  expect(within.line).toContain('chamadas GLM: 3/6');
+});
+
+it('counts accepted deliveries as the union of completed requirements across revisions', () => {
+  const base = {
+    objective: { id: 'g1', status: 'active' },
+    tasks: [],
+    revisions: [
+      { plan: { incremental: { completedRequirementIds: ['req-1'], selectedRequirementId: 'req-2' } } },
+      { plan: { incremental: { completedRequirementIds: [], selectedRequirementId: 'req-1' } } },
+    ],
+  };
+  const snapshot = { settings: {}, runs: [], dependencies: [] };
+  expect(
+    operationProductivityLine({ ...base, goal: { id: 'g1', state: 'active' } }, snapshot)
+      .acceptedDeliveries,
+  ).toBe(1);
+  expect(
+    operationProductivityLine({ ...base, goal: { id: 'g1', state: 'completed' } }, snapshot)
+      .acceptedDeliveries,
+  ).toBe(2);
+  const parallel = {
+    ...base,
+    revisions: [
+      {
+        plan: {
+          incremental: {
+            completedRequirementIds: ['req-1'],
+            selectedRequirementIds: ['req-2', 'req-3'],
+          },
+        },
+      },
+    ],
+  };
+  expect(
+    operationProductivityLine({ ...parallel, goal: { id: 'g1', state: 'completed' } }, snapshot)
+      .acceptedDeliveries,
+  ).toBe(3);
+});
+
+it('does not call a normal QA dependency a block while its work is running', () => {
+  const detail = {
+    goal: { id: 'g1', state: 'active' },
+    objective: { id: 'g1', status: 'active' },
+    tasks: [
+      { id: 't1', stage: 'work', state: 'running' },
+      { id: 't2', stage: 'verify', state: 'blocked_dependencies' },
+    ],
+  };
+  expect(
+    operationProductivityLine(detail, { settings: {}, runs: [], dependencies: [] }).blockReason,
+  ).toBe('nenhum');
 });

@@ -12,7 +12,7 @@ def _root(variable,provisioned,fallback):
     return target.resolve()
 ROOT=_root('AGENTOS_WORKSPACES_ROOT','/srv/agentos/workspaces','.local/workspaces')
 DATA=_root('AGENTOS_BRIDGE_DATA','/var/lib/agentos-bridge','.local/bridge')
-SKIP={'.git','node_modules','evidence','data','.agentos-snapshot.json'}
+SKIP={'.git','node_modules','evidence','data','.agentos-snapshot.json','.local-test','test-results','playwright-report'}
 def digest_key(value): return hashlib.sha256(value.encode()).hexdigest()
 def workspace(value):
     if not re.fullmatch(r'[a-z0-9_-]+/[a-z0-9_-]+',value): raise ValueError('INVALID_WORKSPACE')

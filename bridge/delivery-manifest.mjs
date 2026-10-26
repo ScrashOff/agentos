@@ -14,9 +14,36 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const fail = (code, reason) => Object.assign(Error(code), { code, reason });
 const relative = value => typeof value === 'string' && value.length <= 1024 &&
   !/[\\\x00-\x1f\x7f]/.test(value) && value.split('/').every(p => p && p !== '.' && p !== '..');
-export function deliveryContract(runId, requiredArtifacts = []) {
+export function extractPromptJsonFields(prompt = '') {
+  if (typeof prompt !== 'string') return [];
+  const idx = prompt.lastIndexOf('\nCriteria: ');
+  if (idx < 0) return [];
+  const line = prompt.slice(idx + '\nCriteria: '.length).split('\n')[0]?.trim();
+  if (!line) return [];
+  try {
+    const criteria = JSON.parse(line);
+    if (!Array.isArray(criteria)) return [];
+    const fields = [];
+    for (const c of criteria) {
+      if (c?.type !== 'json_field' || !artifactName.test(c.name ?? '') || reservedNames.has(c.name) ||
+          typeof c.field !== 'string' || !c.field.trim() || c.field.length > 100) continue;
+      const boolean = typeof c.equals === 'boolean';
+      if (!fields.some(f => f.name === c.name && f.field === c.field))
+        fields.push({ name: c.name, field: c.field, ...(boolean ? { boolean: true } : {}) });
+    }
+    return fields.slice(0, 30);
+  } catch { return []; }
+}
+export function deliveryContract(runId, requiredArtifacts = [], requiredJsonFields = []) {
   if (!uuid.test(runId)) throw fail('RUN_IDENTITY_MISMATCH', 'invalid_run');
-  const value = { version: 1, runId, nonce: randomUUID(), requiredArtifacts: [...new Set(requiredArtifacts)] };
+  const jsonFields = Array.isArray(requiredJsonFields) ? requiredJsonFields.filter(Boolean) : [];
+  const value = {
+    version: 1,
+    runId,
+    nonce: randomUUID(),
+    requiredArtifacts: [...new Set(requiredArtifacts)],
+    ...(jsonFields.length ? { requiredJsonFields: jsonFields } : {}),
+  };
   checkContract(value);
   return value;
 }
@@ -26,6 +53,11 @@ function checkContract(value) {
   if (!Array.isArray(value.requiredArtifacts ?? []) || (value.requiredArtifacts ?? []).length > 30 ||
       (value.requiredArtifacts ?? []).some(name => !artifactName.test(name) || reservedNames.has(name)))
     throw fail('RESULT_FORMAT', 'manifest_required_artifacts');
+  if (value.requiredJsonFields !== undefined && (!Array.isArray(value.requiredJsonFields) || value.requiredJsonFields.length > 30 ||
+      value.requiredJsonFields.some(f => !f || !artifactName.test(f.name ?? '') || reservedNames.has(f.name) ||
+        typeof f.field !== 'string' || !f.field.trim() || f.field.length > 100 ||
+        (f.boolean !== undefined && typeof f.boolean !== 'boolean'))))
+    throw fail('RESULT_FORMAT', 'manifest_required_json_fields');
 }
 
 /** No symlink component, special file, unbounded read or pathname-only check. */
@@ -77,8 +109,11 @@ function envelope(value, contract, sealed) {
   for (const item of value.artifacts) {
     if (!item || !artifactName.test(item.name ?? '') ||
         seen.has(item.name) || reservedNames.has(item.name) ||
-        !relative(item.path) || (item.mime != null && (typeof item.mime !== 'string' || item.mime.length > 160)))
-      throw fail('ARTIFACT_PATH', 'manifest_artifact');
+        !relative(item.path) || item.path === 'evidence/delivery-draft.json' ||
+        path.posix.basename(String(item.path)) === 'delivery-draft.json' ||
+        (item.mime != null && (typeof item.mime !== 'string' || item.mime.length > 160)))
+      throw fail('ARTIFACT_PATH', item?.path === 'evidence/delivery-draft.json' || path.posix.basename(String(item?.path)) === 'delivery-draft.json'
+        ? 'delivery_draft_is_not_a_task_artifact' : 'manifest_artifact');
     if (sealed && (!/^[a-f0-9]{64}$/.test(item.digest ?? '') || !Number.isSafeInteger(item.size) || item.size < 0))
       throw fail('RESULT_FORMAT', 'manifest_artifact_digest');
     seen.add(item.name);
@@ -99,10 +134,27 @@ export async function sealDeliveryManifest(root, draft, contract) {
   envelope(draft, contract, false);
   let total = 0;
   const artifacts = [];
+  const requiredFields = contract.requiredJsonFields ?? [];
   for (const item of draft.artifacts) {
     const bytes = await artifactBytes(root, item.path);
     total += bytes.length;
     if (total > 24 * 1024 * 1024) throw fail('ARTIFACT_TOO_LARGE', 'total_size_limit');
+    const fieldReqs = requiredFields.filter(f => f.name === item.name);
+    if (fieldReqs.length || item.name === 'delivery.json' || item.name === 'verification.json') {
+      let parsed;
+      try { parsed = JSON.parse(bytes.toString('utf8')); }
+      catch { throw fail('RESULT_FORMAT', `artifact_invalid_json:${item.name}`); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        throw fail('RESULT_FORMAT', `artifact_json_object_required:${item.name}`);
+      if (typeof parsed.summary === 'string' && Array.isArray(parsed.artifacts) && !Object.hasOwn(parsed, 'passed') && !Object.hasOwn(parsed, 'validated'))
+        throw fail('RESULT_FORMAT', `artifact_contains_manifest_envelope_instead_of_criterion_report:${item.name}`);
+      for (const req of fieldReqs) {
+        if (!Object.hasOwn(parsed, req.field))
+          throw fail('RESULT_FORMAT', `artifact_json_field_missing:${item.name}:${req.field}`);
+        if (req.boolean && typeof parsed[req.field] !== 'boolean')
+          throw fail('RESULT_FORMAT', `artifact_json_field_not_boolean:${item.name}:${req.field}`);
+      }
+    }
     artifacts.push({ name: item.name, path: item.path, mime: item.mime ?? 'application/octet-stream',
       digest: sha(bytes), size: bytes.length });
   }
@@ -136,11 +188,26 @@ export async function prepareDeliveryManifest(home, contract) {
   await writeFile(`${home}/delivery-contract.json`, JSON.stringify(contract), { flag: 'wx', mode: 0o600 });
   await writeFile(`${home}/delivery-validator.mjs`, await readFile(new URL('./delivery-manifest.mjs', import.meta.url)), { flag: 'wx', mode: 0o600 });
 }
-export const deliveryManifestInstruction = `
-DELIVERY_MANIFEST_V1: Antes de terminar, leia requiredArtifacts em /home/agent/delivery-contract.json e salve evidence/delivery-draft.json com {"summary":"resultado real e limitações","artifacts":[{"name":"report.json","path":"evidence/report.json","mime":"application/json"}]}, usando os artefatos reais exigidos pela sua tarefa, não apenas o nome do exemplo. Preserve falhas nos relatórios; este envelope não aprova a tarefa. Execute:
+export function deliveryManifestInstructionFor(contract) {
+  const required = contract?.requiredArtifacts?.length ? contract.requiredArtifacts : ['report.json'];
+  const exampleArtifacts = required.map(name => ({
+    name,
+    path: `evidence/${name}`,
+    mime: name.endsWith('.json') ? 'application/json' : 'text/plain',
+  }));
+  const jsonFields = contract?.requiredJsonFields?.length
+    ? ` Required JSON criterion fields to include inside those evidence files (with true or false according to real execution): ${JSON.stringify(contract.requiredJsonFields)}.`
+    : '';
+  return `
+DELIVERY_MANIFEST_V1: Antes de terminar, leia requiredArtifacts em /home/agent/delivery-contract.json.${jsonFields}
+1. Grave primeiro cada artefato de critério exigido em /workspace/evidence/<name> (por exemplo ${required.map(n => `evidence/${n}`).join(', ')}) contendo o relatório técnico real da tarefa (como {"passed":true,...} ou {"passed":false,...}). NUNCA aponte um artefato de critério para evidence/delivery-draft.json.
+2. Em seguida, salve o rascunho da lista de entrega em /workspace/evidence/delivery-draft.json com {"summary":"resultado real e limitações","artifacts":${JSON.stringify(exampleArtifacts)}}. Preserve falhas nos relatórios; este envelope não aprova a tarefa.
+3. Execute:
 node /home/agent/delivery-validator.mjs /workspace /home/agent/delivery-contract.json /workspace/evidence/delivery-draft.json /home/agent/delivery.json
-O validador verifica caminhos, tamanhos e hashes, vincula a entrega à tentativa atual e grava delivery.json. Cada arquivo deve ter no máximo 8 MiB; a entrega inteira, 24 MiB e 30 arquivos. Preserve logs brutos no workspace; se necessário, publique evidência relevante em arquivos menores com referência explícita ao original, sem esconder falhas ou dispensar artefatos obrigatórios. Corrija erros de embalagem sem refazer testes válidos. Depois responda com o JSON summary/artifacts. Se editar qualquer artefato após validar, execute o validador novamente. Não copie delivery.json de outra tentativa nem declare candidate.json/changes.patch; o runtime gera esses dois arquivos.
+O validador verifica caminhos, tamanhos, campos JSON obrigatórios e hashes, vincula a entrega à tentativa atual e grava /home/agent/delivery.json. Cada arquivo deve ter no máximo 8 MiB; a entrega inteira, 24 MiB e 30 arquivos. Corrija erros apontados pelo validador sem refazer testes válidos. Quando o validador imprimir DELIVERY_MANIFEST_VALIDATED, /home/agent/delivery.json já está selado como autoridade de coleta: encerre imediatamente respondendo apenas com o JSON curto {"summary":"...","artifacts":${JSON.stringify(exampleArtifacts)}}. Se editar qualquer artefato após validar, execute o validador novamente. Não copie delivery.json de outra tentativa nem declare candidate.json/changes.patch; o runtime gera esses dois arquivos.
 `;
+}
+export const deliveryManifestInstruction = deliveryManifestInstructionFor();
 
 if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
   try {

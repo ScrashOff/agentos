@@ -82,7 +82,7 @@ export function ObjectivePlan({ detail }: { detail: Row }) {
           {plan.incremental && (
             <p className="goal-notice">
               Entregas incrementais · {plan.incremental.completedRequirementIds.length} de {plan.requirements.length} requisitos verificados em lotes anteriores.
-              {' '}Lote atual: {plan.requirements.find((r: Row) => r.id === plan.incremental.selectedRequirementId)?.description}
+              {' '}Lote atual: {(plan.incremental.selectedRequirementIds?.length ? plan.incremental.selectedRequirementIds : [plan.incremental.selectedRequirementId]).map((id: string) => plan.requirements.find((r: Row) => r.id === id)?.description).filter(Boolean).join(' · ')}
               {' '}Próximo responsável: {run?.state === 'running' || run?.state === 'queued' ? 'planejador' : 'execução e verificação independente'}.
               {plan.incremental.pendingRequirementIds.length > 0 && ' O próximo lote será preparado automaticamente após o aceite deste; o objetivo permanece aberto.'}
             </p>

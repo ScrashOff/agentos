@@ -1,0 +1,109 @@
+AgentOS — contrato de acompanhamento e qualificação da autonomia
+Data: 26/10/2026. Estado: plano de trabalho; aprovação ainda não demonstrada.
+
+GOAL
+
+Transformar um objetivo autorizado em produto integrado e verificado, mantendo
+execução, reposição, planejamento e recuperação sem condução manual repetitiva.
+Corrigir e publicar defeitos comprovados do próprio framework até obter as
+provas abaixo. Usar exclusivamente GLM, até 12 sessões lógicas e no máximo seis
+chamadas globais simultâneas, incluindo planejamento, supervisão e QA.
+
+O projeto é genérico: jogos são uma carga de validação, não uma regra especial
+do scheduler. Nenhuma mudança abaixo substitui critérios originais de objetivos
+existentes nem converte trabalho parcial em produto final.
+
+ORDEM DE TRABALHO
+
+1. Fechar o lote em andamento: contribuições, integração, QA independente e
+   contraprova externa da candidata exata. Guardar identidade de base, patches,
+   entrada, tentativa, artefato e aceite. Divergência vira defeito reproduzível.
+2. Fechar os requisitos restantes pela cadeia canônica. Preservar as entregas
+   acumuladas e a versão mais recente do controlador na composição final.
+3. Qualificar recuperação em instalação isolada com o mesmo candidato:
+   insumo ausente recuperável, falha de transporte, rejeição de entrega,
+   evento perdido/reinício, repetição sem avanço e resultado de parada incerto.
+   Nunca injetar falhas destrutivas no trabalho de produção em andamento.
+4. Medir reposição e vazão com carga independente suficiente. Corrigir o
+   gargalo dominante observado; não inventar tarefas para preencher contadores.
+5. Iniciar observação de 24 horas somente após as provas anteriores. Manter
+   registro externo de intervenções e evidência por produto. Qualquer correção
+   manual necessária invalida a alegação de janela sem intervenção; preservar
+   o histórico e iniciar nova janela identificada após corrigir e requalificar.
+
+CRITÉRIOS DE SAÍDA
+
+A. Produto: todos os requisitos do objetivo de melhoria aceitos, com integração
+   e QA da mesma candidata; aplicação pela publicação protegida e efeito real
+   observado. Aceite determinístico de delivery.json não basta para essa prova.
+B. Avaliador: 20 cenários x 3 variantes com resultados externos reproduzíveis e
+   identidade completa. Resultados negativos esperados precisam ser reconhecidos
+   como negativos. Falhas e pendências continuam no denominador; nunca chamar
+   um relatório de 60 entradas de 60 execuções autônomas aprovadas.
+C. Recuperação: incidente -> decisão vinculada -> ação mediada -> recibo de
+   consumo -> efeito confirmado. Nenhum retry de efeito incerto, duplo dono,
+   falso aceite, enfraquecimento de negativo ou desaparecimento de evidências.
+D. Continuidade: vaga e tarefa realmente elegível causam despacho sem LLM;
+   objetivo incompleto sem backlog útil acorda o planner existente. Dependência,
+   quota, política e bloqueio de recurso continuam válidos e visíveis.
+E. Recursos: apenas GLM, teto global seis, isolamento entre workspaces e dono
+   único; dados indisponíveis ficam desconhecidos. Não inferir chamadas pelas
+   sessões nem interpretar baixa concorrência durante uma dependência como bug.
+F. Generalidade: exercícios independentes em pelo menos duas famílias de tarefa
+   (por exemplo correção com testes e operação recorrente somente leitura), com
+   critérios congelados antes dos ensaios e avaliador fora da escrita do worker.
+G. Janela longa: 24 horas contínuas após qualificação prévia, com trabalho útil
+   suficiente para observar reposição e recuperação. Concluir o backlog é
+   sucesso do backlog, mas tempo ocioso sem demanda não prova carga contínua.
+
+MEDIÇÃO
+
+Separar produto final, work, integração e QA. Registrar por janela:
+- requisitos e produtos com QA aceitos; tempo até aceite; tempo por fase;
+- chamadas e tentativas por produto; rejeições, replans e causas recorrentes;
+- tarefa pronta, despacho e executor realmente iniciado, com tempos separados;
+- backlog com dependências satisfeitas e elegibilidade completa quando observável;
+- chamadas GLM atuais/globais com origem e horário; sessões do objetivo;
+- decisões de supervisão aplicadas e efeitos efetivamente verificados;
+- intervenções manuais, duplicação de efeitos, falsos aceites e contraexemplos;
+- armazenamento, gaps de observação e versão/base de cada ensaio.
+
+Metas de desempenho permanecem hipóteses até medição comparável: p95 de
+elegível->início <=10s com vaga e recursos; ociosidade por defeito de despacho
+<5% do tempo elegível; >=2x produtos com QA/h em três frentes contra serial
+equivalente. Não calcular esses indicadores usando apenas estado ready,
+heartbeats ou amostras de dois minutos. Reportar indisponível quando faltar
+a evidência necessária. Segurança exige zero falsos aceites/efeitos duplicados
+nos controles conhecidos e nenhuma chamada acima do teto configurado.
+
+ACOMPANHAMENTO E DESENVOLVIMENTO
+
+O runtime existente é dono da fila, despacho, retries, eventos e supervisão GLM.
+Um observador operacional externo somente leitura pode registrar snapshots a
+cada dois minutos e destacar suspeitas. Ele não é outro scheduler, não consome
+modelos, não aceita entregas, não publica nem certifica autonomia sozinho.
+Logs locais de observação não substituem recibos canônicos do controlador.
+
+O trabalho do responsável pelo desenvolvimento é revisar essas evidências,
+reproduzir a causa em instalação isolada e entregar a menor correção completa.
+Cada correção tem: hipótese, caso antes/depois, testes relevantes, commit,
+validação registrada, publicação protegida quando necessária e efeito observado.
+Tratar um gargalo comprovado por vez. Não alterar arquivos de atores vivos,
+reiniciar por idade, duplicar workers ou acelerar removendo QA/permissões.
+
+Acompanhar continuamente não concede uma execução eterna ao cliente de chat.
+A supervisão que deve continuar com o cliente fechado vive no servidor. Registrar
+separadamente o que o servidor executa automaticamente e o que depende de uma
+revisão ativa do responsável. Nunca apresentar timer ou monitor ativo como prova
+de desenvolvimento autônomo ou de produto aceito.
+
+PROVA FINAL
+
+Produzir um pacote de qualificação com versão, critérios congelados, ensaios,
+resultados por caso, hashes, referências a aceites/QA/publicação, métricas,
+intervenções e limitações. Classificar cada item como comprovado, reprovado,
+pendente ou não observável. O goal só termina quando todos os itens obrigatórios
+forem comprovados; um novo defeito relevante reabre a prova correspondente.
+
+Referências internas: CONTINUOUS-DELIVERY-PLAN.txt, PLANNING-SUBTASKS.txt,
+EVENT-DRIVEN-SUPERVISION.txt, OBJECTIVE-INPUTS.txt e READONLY-QA.txt.

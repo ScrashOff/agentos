@@ -1,0 +1,133 @@
+Event-driven supervision and loop observations
+
+The existing WorkerEngine remains the owner of incremental objectives. This
+change adds neither a second planner nor a replacement task queue. Workforce
+objectives retain their existing supervisor; this reviewer refuses that domain.
+
+Scheduling
+
+PlanningWake subscribes to the existing PostgreSQL agentos_planning_wake channel.
+It coalesces notifications, reconnects after connection loss and preserves the
+periodic deterministic reconciler as recovery for lost notifications. A wake is
+not a model call. Events are committed before notification; notification payloads
+are empty. A separate additive trigger covers feedback, registered/requested
+inputs and review transitions without changing the guarded backlog migration.
+
+Observation
+
+The existing read-only executor observer supplies completed tool calls, arguments,
+results and file/evidence projections. The detector reads no assistant reasoning,
+credentials, process arguments or additional host files. Six identical completed
+returns, or twelve returns alternating between two stable fingerprints, create
+a suspicion. Fingerprints contain tool names and SHA-256 digests rather than raw
+commands or output. Truncated, redacted, partial and malformed evidence is ignored.
+
+A single long build, overlapping calls, new search arguments, changing CI results,
+executor presence or elapsed time alone cannot establish a loop. Metadata changes
+may indicate new material; they do not prove a correct result. This conservative
+detector does not cover every possible loop or semantic stagnation pattern.
+
+Review policy
+
+Authenticated operator API:
+  POST /api/objectives/<objective-uuid>/review-policy
+  {"mode":"observe"}
+
+Modes: off, observe (default), supervised. GET the same objective's /reviews route
+to inspect bounded persisted cases, decisions, evidence references, action IDs,
+message IDs and receipt states. These routes reuse existing operator authentication.
+
+Observe mode records evidence without model calls. Supervised mode invokes GLM
+through the same generate route and global six-request gate as other roles. It
+requires the operator's GLM-only model policy, honors authentication/quota holds,
+and never silently switches provider. A review is a transient model judgment,
+not an additional worker session. One current fenced review is claimed at a time;
+the global provider gate also counts requests with an uncertain old owner.
+
+The reviewer receives a bounded task summary, signal, recent redacted tool snippets
+and prior action summaries. It can continue observation, send advisory guidance,
+request an original input or request replanning at a confirmed execution boundary.
+Before applying the response, the controller rechecks goal ownership, current run,
+attempt, fence, context, policy, cancellation and fresh material evidence. A late
+judgment is discarded when the actor already advanced. Neither detector nor
+reviewer can stop, retry or accept a worker, broaden its tools/write scope, or
+import an arbitrary host file. Safe interruption remains a separately authorized
+controller operation; no automatic interruption is introduced by this feature.
+
+Actions and effects
+
+Signals of the same cause are coalesced. The controller commits an action identity
+and exact intent before sending worker.guide. A lost response is reconciled only
+through worker.guidanceReceipt; it never causes an automatic second send. Known
+message identity and consumption cannot be overwritten by an unrelated receipt.
+
+Queued, consumed and effect-verified are separate states. A consumed inbox message
+does not prove progress. Acceptance must belong to the same run, fence, context
+and attempt, and follow consumption. Further identical completed calls after
+consumption can reopen review, retaining append-only prior intent/receipt history;
+the reviewer must change its approach rather than resend the same instruction.
+Observation-only completion can also close a case, with actionApplied:false;
+it must not be counted as a successful supervisory intervention.
+
+Provider timeout or invalid review output leaves a retry pending while the worker
+continues. Deadlines use the existing GLM generation timing, not a short auxiliary
+timeout that interprets uncertainty as permission to stop. No objective-wide token
+budget is added. Usage is recorded when observed; missing usage is not zero cost.
+
+Rejected deliveries
+
+Reconciliation also carries immutable artifacts from submitted deliveries with
+negative acceptance and no live lease. This gives the next plan the actual patch,
+original input and counterexamples, without certifying the rejected partial tree.
+Previously accepted candidates remain the repair source. Artifacts from a live
+or uncertain actor are not promoted by this mechanism.
+
+Goal state reconciliation
+
+Derived completion considers the current plan revision, rather than historical
+cancelled tasks. A constrained reconciler repairs the historical contamination
+case only when every current task is accepted, work remains, an older cancelled
+task exists, and no live or uncertain actor remains. Current cancellation and
+operator pause do not satisfy that proof. Task/run history is unchanged.
+
+Verification
+
+Tests exercise real PostgreSQL transitions, notification lifecycle, duplicate
+evidence, stale judgments, quota holds, provider failures, ambiguous sends,
+same-candidate acceptance, post-consumption repetition and preserved snapshots.
+Synthetic tests are not autonomy qualification. Production verification must
+measure accepted products, wasted calls, time to acceptance, interventions,
+false positives and effect receipts on a frozen cohort. A running timer, active
+model session or recorded suspicion does not establish continuous autonomy.
+
+Reference reviewed: makecindy/cindy commit
+c7a31af6494278b236e5e2b6c96a12c719201b1f (Apache-2.0).
+Inspired by its mechanisms, with an independent implementation:
+  packages/maker-core/src/agents/shared/loop-guard.ts
+  apps/desktop/src/main/maker-host/tool-loop-reviewer.ts
+  apps/desktop/src/main/maker-ipc/orcaTeamService.ts
+  apps/desktop/src/main/maker-ipc/orcaInterAgentDispatcher.ts
+  docs/dev-rules/orca-team-architecture.md
+
+The reviewed auxiliary reviewer uses 15 seconds and returns stop on failure;
+those semantics are not adopted here. The reviewed architecture document still
+lists workflow_run orchestration as future work, not proof of large-scale autonomy.
+Recurring runtime diagnostics
+
+The same environment failure can survive changing commands, quoted paths and
+stack locations. In addition to identical/alternating returns, the observer can
+request a review after at least six completed calls in its last twelve return a
+known Node runtime diagnostic, with another occurrence among the last three.
+Initial coverage is ERR_MODULE_NOT_FOUND, ERR_UNKNOWN_FILE_EXTENSION and
+ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX. This is not a general error classifier.
+
+The evidence identity uses the diagnostic family; varying commands, paths,
+stacks or occurrence counts alone do not create a new review owner. Fingerprints
+remain available for causal inspection. Existing run/fence/context, committed
+event, coalescing, provider gate, material-change and consumed-guidance rules
+still apply. Partial, redacted, unfinished and truncated traces remain inconclusive.
+
+A diagnostic can be an intentional negative test or a quoted source excerpt.
+The reviewer may continue observing without sending guidance. A suspicion never
+marks a task failed, stops/retries an actor, changes scope or grants acceptance.
+Fresh successful work invalidates a stale diagnostic review before dispatch.

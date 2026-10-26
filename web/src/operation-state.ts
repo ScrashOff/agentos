@@ -264,3 +264,88 @@ export function operationWorkforce(goalId: string, tasks: Row[], data: Row) {
     ).length,
   };
 }
+
+export function operationProductivityLine(detail: Row, data: Row) {
+  const tasks: Row[] = (detail.tasks ?? []).filter((t: Row) => !['cancelled', 'superseded'].includes(t.state));
+  const ready = tasks.filter((t: Row) => ['ready', 'queued'].includes(t.state)).length;
+  const activeSessions = tasks.filter((t: Row) => ['running', 'queued', 'cancelling', 'reconciling'].includes(t.state)).length;
+  const poolHealth = data.settings?.['workforce-health:' + detail.goal?.id];
+  const runs: Row[] = detail.runs ?? data.runs ?? [];
+  const runningRuns = runs.filter((r: Row) => r.state === 'running');
+  // The GLM gate is global. Only a real gate reading may fill this number;
+  // running runs of this objective are not model calls and must never be
+  // saturated into a plausible-looking count.
+  const gate = data.settings?.['glm-gate'];
+  const glmCalls: number | null = Number.isInteger(gate?.effectiveActive)
+    ? gate.effectiveActive
+    : Number.isInteger(gate?.active)
+      ? gate.active
+      : Number.isInteger(poolHealth?.glm?.activeRequests)
+        ? poolHealth.glm.activeRequests
+        : null;
+  const glmOverLimit = glmCalls !== null && glmCalls > 6;
+  const taskIds = new Set(tasks.map((t: Row) => t.id));
+  const objectiveModelCalls =
+    runningRuns.filter(
+      (r: Row) => taskIds.has(r.task_id) && modelActivity(r, data.events)?.pending,
+    ).length + ((detail.planning ?? []).some((p: Row) => p.state === 'running') ? 1 : 0);
+  const revisions: Row[] = detail.revisions ?? [];
+  const incrementalRevisions = revisions.filter((r: Row) => r.plan?.incremental);
+  let acceptedDeliveries: number;
+  if (incrementalRevisions.length) {
+    const done = new Set<string>();
+    for (const r of incrementalRevisions)
+      for (const id of r.plan.incremental.completedRequirementIds ?? []) done.add(id);
+    if (detail.goal?.state === 'completed') {
+      const latest = revisions[0]?.plan?.incremental;
+      for (const id of latest?.selectedRequirementIds ?? []) done.add(id);
+      if (latest?.selectedRequirementId) done.add(latest.selectedRequirementId);
+    }
+    acceptedDeliveries = done.size;
+  } else if (Array.isArray(detail.deliveryFlow?.accepted)) {
+    acceptedDeliveries = detail.deliveryFlow.accepted.length;
+  } else {
+    acceptedDeliveries = tasks.filter(
+      (t: Row) => t.stage === 'verify' && t.state === 'accepted',
+    ).length;
+  }
+  let blockReason = 'nenhum';
+  if (ready === 0 && !['completed', 'cancelled'].includes(detail.goal?.state)) {
+    const storageBlocked = data.settings?.['storage:agentos-workspaces']?.state === 'blocked' ||
+      tasks.some((t: Row) => /DISK_CAPACITY/i.test(t.reason ?? ''));
+    const reconciling = tasks.some((t: Row) => ['reconciling', 'recovering_artifacts'].includes(t.state)) ||
+      runs.some((r: Row) => r.state === 'reconciling');
+    const planningBlocked = ['planning', 'replanning'].includes(detail.goal?.state) ||
+      ['planning', 'replanning', 'waiting_external'].includes(detail.objective?.status) ||
+      ['running', 'queued', 'failed'].includes(detail.planning?.[0]?.state) ||
+      tasks.some((t: Row) => t.state === 'recovery_blocked');
+    const providerBlocked = tasks.some((t: Row) => t.state === 'waiting_quota') ||
+      detail.planning?.[0]?.state === 'waiting_quota' ||
+      runs.some((r: Row) => providerAvailabilityFailureForRun(r));
+    const conflictBlocked = tasks.some((t: Row) => t.state === 'waiting_resource' || /CONFLICT|REBASE|PREIMAGE/i.test(t.reason ?? ''));
+    const depBlocked =
+      tasks.some((t: Row) => t.state === 'blocked_failed') ||
+      (tasks.some((t: Row) => t.state === 'blocked_dependencies') &&
+        !tasks.some((t: Row) => ['running', 'ready', 'queued'].includes(t.state)));
+    const dispatchFailed = Boolean(data.engine?.error);
+    if (storageBlocked) blockReason = 'armazenamento';
+    else if (reconciling) blockReason = 'reconciliação';
+    else if (planningBlocked) blockReason = 'planejamento';
+    else if (providerBlocked) blockReason = 'provedor';
+    else if (conflictBlocked) blockReason = 'conflito';
+    else if (depBlocked) blockReason = 'dependências';
+    else if (dispatchFailed) blockReason = 'falha de despacho';
+  }
+  return {
+    ready,
+    activeSessions,
+    maxSessions: 12,
+    glmCalls,
+    glmOverLimit,
+    objectiveModelCalls,
+    maxGlmCalls: 6,
+    acceptedDeliveries,
+    blockReason,
+    line: `trabalho pronto: ${ready} | sessões ativas: ${activeSessions}/12 | chamadas GLM: ${glmCalls === null ? '?/6' : `${glmCalls}/6${glmOverLimit ? ' (acima do limite!)' : ''}`} | entregas aceitas: ${acceptedDeliveries} | bloqueio: ${blockReason}`,
+  };
+}

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { taskSchema, criterionSchema, DomainError } from './contracts.js';
+import {isAttemptLocalWriteScope} from './attempt-local-write-scope.js';
 const artifactName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}$/);
 const planCriterion = z.discriminatedUnion('type', [
   criterionSchema.options[0].extend({ name: artifactName }),
@@ -73,6 +74,7 @@ export const planSchema = z.object({
   incremental: z.object({
     version: z.literal(1),
     selectedRequirementId: z.string(),
+    selectedRequirementIds: z.array(z.string()).min(1).max(6).optional(),
     completedRequirementIds: z.array(z.string()).max(30),
     pendingRequirementIds: z.array(z.string()).max(30),
   }).strict().optional(),
@@ -160,6 +162,7 @@ export function validatePlan(
         p.startsWith('/') ||
         p.includes('..') ||
         p.includes('\\') ||
+        p.includes('//') || /(^|\/)\.(\/|$)/.test(p) ||
         /(^|\/)(\.git|node_modules|assets)(\/|$)/.test(p),
     );
     if (refusedPath !== undefined)
@@ -216,16 +219,43 @@ export function validatePlan(
   }
   const incremental = plan.incremental;
   if (incremental) {
-    const partition = [...incremental.completedRequirementIds, incremental.selectedRequirementId, ...incremental.pendingRequirementIds];
+    const selectedIds = incremental.selectedRequirementIds ?? [incremental.selectedRequirementId];
+    const partition = [...incremental.completedRequirementIds, ...selectedIds, ...incremental.pendingRequirementIds];
     if (request.mode !== 'execute' || request.workspaces.length !== 1 ||
+        selectedIds[0] !== incremental.selectedRequirementId ||
         partition.length !== plan.requirements.length || new Set(partition).size !== partition.length ||
         partition.some(id => !plan.requirements.some(r => r.id === id)))
       fail('Partição incremental inválida ou escopo não suportado.');
-    if (plan.tasks.some(t => t.stage !== 'verify' && t.covers.some(id => id !== incremental.selectedRequirementId)))
+    if (plan.tasks.some(t => t.stage !== 'verify' && t.covers.some(id => !selectedIds.includes(id))))
       fail('O lote deve implementar somente seu requisito selecionado.');
+    const work = plan.tasks.filter(t => t.stage === 'work');
+    if(selectedIds.some(id=>!work.some(w=>w.covers.includes(id))))
+      fail('Requisito selecionado sem subtarefa de implementação.',{violation:'MISSING_REQUIREMENT_WORK'});
+    if (work.length > 1) {
+      const seenPaths: { key: string; path: string }[] = [];
+      for (const w of work) {
+        if(w.covers.length!==1)
+          fail('Cada subtarefa deve identificar seu requisito.',{violation:'TASK_REQUIREMENT_BINDING',task:w.key});
+        if(w.dependencies.length&&!w.sourceTask)
+          fail('Subtarefa dependente precisa da candidata produzida por suas dependências.',{violation:'DEPENDENCY_SOURCE_REQUIRED',task:w.key});
+        if (!w.writePaths.length)
+          fail('Entregas paralelas no mesmo lote exigem writePaths explícitos.', { task: w.key });
+        for (const rawPath of w.writePaths) {
+          if(isAttemptLocalWriteScope(rawPath))continue;
+          const norm = rawPath.replace(/\/+$/, '');
+          const conflict = seenPaths.find(
+            other => other.key !== w.key && (other.path === norm || other.path.startsWith(norm + '/') || norm.startsWith(other.path + '/')),
+          );
+          if (conflict)
+            fail('Entregas paralelas no mesmo lote exigem writePaths disjuntos.', { task: w.key, conflictTask: conflict.key, writePath: rawPath });
+          seenPaths.push({ key: w.key, path: norm });
+        }
+      }
+    }
   }
+  const selectedIds = incremental ? (incremental.selectedRequirementIds ?? [incremental.selectedRequirementId]) : [];
   const requiredNow = incremental?.pendingRequirementIds.length
-    ? plan.requirements.filter(r => r.id === incremental.selectedRequirementId)
+    ? plan.requirements.filter(r => selectedIds.includes(r.id))
     : plan.requirements;
   for (const req of requiredNow)
     if (!plan.tasks.some((t) => finalValidators.has(t.key) && t.covers.includes(req.id)))

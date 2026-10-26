@@ -25,8 +25,15 @@ import { reconcileCandidateValidations } from './candidate-validation.js';
 import { reconcileCandidateValidationEvidence } from './candidate-validation-evidence.js';
 import { reconcilePublishedRebases } from './published-rebase.js';
 import { reconcileVerificationSourceBindings } from './verification-source-binding.js';
+import {PlanningWake} from './planning-wake.js';
+import {installObjectiveReview,ObjectiveReviewEngine} from './objective-review.js';
 export class WorkerEngine {
   planner = new PlanningEngine();
+  reviews=new ObjectiveReviewEngine();
+  wake=new PlanningWake(()=>this.requestWake());
+  private wakeRequested=false;
+  private reviewSync:Promise<void>|null=null;
+  private lastReviewScan=0;
   boss = new PgBoss({ connectionString: config.databaseUrl, schema: 'agentos_queue' });
   workerId = 'worker-' + randomUUID().slice(0, 8);
   timer?: ReturnType<typeof setInterval>;
@@ -43,6 +50,7 @@ export class WorkerEngine {
   publishedRebaseSync: Promise<unknown> | null = null;
   verificationSourceBindingSync: Promise<unknown> | null = null;
   async start() {
+    await installObjectiveReview();
     this.boss.on('error', () => {
       this.lastError = 'Falha na fila; confira a conexão PostgreSQL.';
     });
@@ -69,10 +77,16 @@ export class WorkerEngine {
           });
     }, 10000);
     this.timer = setInterval(() => void this.tick(), 1000);
+    await this.wake.start();
     await this.tick();
   }
+  private requestWake(){this.wakeRequested=true;if(!this.busy)void this.tick();}
   async tick() {
     if (this.busy || this.stopped) return;
+    const urgent=this.wakeRequested;this.wakeRequested=false;
+    if(!this.reviewSync&&(urgent||Date.now()-this.lastReviewScan>=10000)){
+      this.lastReviewScan=Date.now();this.reviewSync=this.reviews.tick().catch(()=>{}).finally(()=>{this.reviewSync=null;});
+    }
     if (!this.candidateValidationSync)
       this.candidateValidationSync = reconcileCandidateValidations().catch(() => {}).finally(() => { this.candidateValidationSync = null; });
       if (!this.candidateValidationEvidenceSync)
@@ -134,6 +148,7 @@ export class WorkerEngine {
         } catch { /* An old health timestamp remains visibly stale. */ }
       }
       this.busy = false;
+      if(this.wakeRequested&&!this.stopped)setImmediate(()=>void this.tick());
     }
   }
   async execute(id: string) {
@@ -222,6 +237,9 @@ export class WorkerEngine {
   }
   async stop() {
     this.stopped = true;
+    await this.wake.close();
+    await this.reviews.close();
+    await this.reviewSync;
     await this.planner.close();
     if (this.timer) clearInterval(this.timer);
     if (this.memoryTimer) clearInterval(this.memoryTimer);

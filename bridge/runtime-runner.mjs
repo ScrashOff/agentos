@@ -21,7 +21,8 @@ import { materializeSourceInputs } from './source-inputs.mjs';
 import {hydrateArtifactInputBundle,referencedInputLimitBytes} from './artifact-input-bundle.mjs';
 import {bindCompositionInputs} from './composition-inputs.mjs';
 import { preserveRuntimeArtifactClaims, runtimeArtifactInstruction } from './runtime-artifacts.mjs';
-import { deliveryContract, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstruction } from './delivery-manifest.mjs';
+import { museTaskDeliveryInstruction } from './task-delivery-contract.mjs';
+import { deliveryContract, extractPromptJsonFields, prepareDeliveryManifest, collectDeliveryManifest, deliveryManifestInstructionFor } from './delivery-manifest.mjs';
 import {analyzePollTrace} from './runtime-progress.mjs';
 import {inspectRuntimeProgress,checkpointRuntimeProgress} from './inspect-runtime-progress.mjs';
 import {captureRuntimeHandoff,runtimeHandoffInstruction} from './runtime-handoff.mjs';
@@ -118,7 +119,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     throw e;
   }
   const loopbackHosts = await prepareSandboxLocalhost(home);
-  const outputContract = deliveryContract(params.runId, params.deliveryContract?.artifacts?.map(a => a.name) ?? []);
+  const outputContract = deliveryContract(params.runId, params.deliveryContract?.artifacts?.map(a => a.name) ?? [], extractPromptJsonFields(params.prompt));
   const repairSnapshot = await prepareRepairFinalization(params,
     () => workspaceOperation({action: 'inspect', workspace: params.workspace}), home);
   if (repairSnapshot) outputContract.requiredArtifacts = outputContract.requiredArtifacts.filter(name => name !== 'implementation.patch');
@@ -578,10 +579,13 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     const roleClosure = params.readOnlySource && params.workKind !== 'repair'
       ? '\nThis is independent read-only verification. Publish a valid negative or inconclusive verification delivery when a bounded discriminating test proves a defect or cannot validate a required criterion. Keep passed:false and identify the exact missing evidence; finishing this scoped verification is not acceptance of the objective. The supervisor owns implementation repair. Preserve the immutable source. Do not repeat an already proven broad suite or keep polling the same failed browser; use an external watchdog, preserve partial tool evidence and return the bound report and manifest.\n'
       : '';
-    const prompt = `${params.prompt}${roleClosure}${sourceInputs.instruction}\n\nContext manifest and shared memory: /home/agent/context.json\nInputs: /home/agent/inputs/\nRoutine code errors, failing tests and missing references that can be fixed in this workspace are implementation work, not external blockers. When assigned implementation, edit and test until the scoped task is done; do not return only a diagnosis of a fixable error. Do not expand scope or claim success without evidence. Output: respond with JSON {"summary":"...","artifacts":[{"name":"report.json","path":"evidence/report.json","mime":"application/json"}]}. Artifacts must be real files under this workspace, not claimed executions. Return a limitation only for an actual unmet external dependency or unresolved verified defect. Never claim independent acceptance.`;
+    const exampleArtifacts = params.deliveryContract?.artifacts?.length
+      ? params.deliveryContract.artifacts
+      : [{ name: 'report.json', path: 'evidence/report.json', mime: 'application/json' }];
+    const prompt = `${params.prompt}${roleClosure}${sourceInputs.instruction}\n\nContext manifest and shared memory: /home/agent/context.json\nInputs: /home/agent/inputs/\nRoutine code errors, failing tests and missing references that can be fixed in this workspace are implementation work, not external blockers. When assigned implementation, edit and test until the scoped task is done; do not return only a diagnosis of a fixable error. Do not expand scope or claim success without evidence. Output: respond with JSON {"summary":"...","artifacts":${JSON.stringify(exampleArtifacts)}}. Artifacts must be real files under this workspace, not claimed executions. Return a limitation only for an actual unmet external dependency or unresolved verified defect. Never claim independent acceptance.`;
     const receipt = await rpc('session/prompt', {
       sessionId: params.runId,
-      contentBlocks: [{ type: 'text', text: prompt + runtimeHandoffInstruction + runtimeArtifactInstruction + deliveryManifestInstruction + (repairSnapshot ? repairFinalizationInstruction : '') }],
+      contentBlocks: [{ type: 'text', text: prompt + museTaskDeliveryInstruction(params.deliveryContract) + runtimeHandoffInstruction + runtimeArtifactInstruction + deliveryManifestInstructionFor(outputContract) + (repairSnapshot ? repairFinalizationInstruction : '') }],
     });
     receiptId = receipt.messageId;
     if (guidanceIdentity) {

@@ -1,0 +1,67 @@
+AgentOS — QA com fontes e dependências somente leitura
+
+Uma execução de QA não deve tornar node_modules gravável nem copiar o projeto
+para dentro de si para contornar um erro do carregador de configuração.
+
+Diagnóstico reproduzido em instalação isolada com Vitest4.1.11, Vite7 e Node24:
+- fontes e dependências imutáveis, usuário sem privilégios, rede isolada;
+- carregador bundle padrão: erro de permissão ao criar a configuração temporária;
+- --configLoader native --no-cache: a asserção real executou e passou;
+- fontes preservados, sem cópia de dependências e sem banco de dados.
+Essa prova é de inicialização do runner, não aprovação do projeto ou autonomia.
+
+Para versões/configurações compatíveis, executar o Vitest já instalado, evitando
+npx baixar um pacote ou criar estado inesperado. Exemplo sobre um teste existente:
+
+node node_modules/vitest/vitest.mjs run CAMINHO_DO_TESTE \
+  --configLoader native --no-cache
+
+Confirmar a versão e o suporte das opções. O carregador native exige que o runtime
+entenda a sintaxe da configuração; runner é outra alternativa documentada pelo
+Vite para configurações incompatíveis com import nativo. Não trocar opções sem
+verificar o resultado real. Fontes, dependências e permissões continuam imutáveis.
+
+O include da configuração precisa cobrir o teste escolhido. Informar um arquivo
+.mjs na CLI não faz uma configuração limitada a **/*.test.ts incluí-lo. Se for
+necessária configuração específica para um subconjunto, gravá-la somente em área
+permitida de evidência ou temporários, preservar os controles necessários e
+identificar o subconjunto no relatório. Zero testes encontrados nunca é aprovação;
+não usar passWithNoTests para satisfazer o contrato.
+
+A ausência do banco de testes isolado continua sendo uma limitação explícita.
+Não expor o banco de produção ou credenciais aos workers nem remover setup/asserções
+para alegar passagem da suíte completa. Usar a cadeia existente de validação
+registrada para PostgreSQL e a candidata exata; QA focal não substitui essa etapa.
+
+Se uma cópia de fonte for realmente necessária, usar um destino autorizado fora
+da árvore de origem ou excluir explicitamente o próprio destino, data, caches,
+dependências e demais saídas de execução, com inventário verificável. Nunca
+cp/rsync de /workspace para /workspace/data/... sem prevenir autocópia. Preservar
+evidências existentes e respeitar escopo de escrita; não apagar árvore de ator vivo.
+
+Registrar comando completo, exit code, quantidade de testes, resultados negativos,
+hashes dos fontes e limitações. Um workaround do ambiente não altera critérios
+de aceite, isolamento, identidade de tentativa nem autoridade de publicação.
+
+TypeScript do projeto e o carregador de configuração são questões distintas.
+Node24 pode remover tipos, mas a execução ESM nativa exige extensões nos imports
+e não aplica a resolução do tsconfig. Um projeto com imports sem extensão pode
+precisar do tsx já instalado, mesmo que a configuração do Vitest carregue nativamente.
+
+Para um runner desse projeto, usar a dependência instalada, por exemplo:
+
+node node_modules/tsx/dist/cli.mjs server/autonomy-runner.ts
+
+Reprodução isolada com dois arquivos inalterados: import sem extensão retornou
+ERR_MODULE_NOT_FOUND com Node nativo e executou o valor esperado com tsx. Não
+mover diretórios ou reescrever fontes para compensar um comando de inicialização
+incompatível. Erro de ambiente não comprova defeito da lógica da candidata;
+controles de regressão devem começar da cópia identificada e mudar só o alvo.
+
+Hashes também precisam da serialização do produtor. Quando calculados sobre
+JSON.stringify(payload), json.dumps do Python com espaços padrão produz bytes
+diferentes. Uma nova execução pode mudar timestamps e hashes legitimamente;
+conferir identidade, conteúdo e integridade em vez de exigir o hash de outro ensaio.
+
+Referências primárias: https://v7.vite.dev/config/ (Config Loading) e
+https://nodejs.org/docs/latest-v24.x/api/typescript.html (Modules: TypeScript).

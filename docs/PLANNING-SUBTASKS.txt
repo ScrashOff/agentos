@@ -1,0 +1,102 @@
+Planning subtasks and supervised planner recovery
+
+Requirement identity tracks product acceptance. Task identity tracks execution.
+The existing incremental planner now permits up to six distinct tasks to
+contribute to one eligible requirement or to several eligible requirements.
+Requirements are neither renamed nor duplicated to manufacture concurrency.
+
+Compact decision example:
+{"deliveries":[
+ {"key":"fixtures-a","requirementId":"req-1","dependsOn":[],
+  "title":"Prepare first fixture group","action":"Implement the assigned fixture group and preserve the fixed contract.",
+  "verification":"Validate the fixture schema and preserve all required negatives.",
+  "agentId":"engineering.backend.node","writePaths":["qualification/a"]},
+ {"key":"runner","requirementId":"req-1","dependsOn":["fixtures-a"],
+  "title":"Implement qualification runner","action":"Implement the runner against the accepted fixtures and preserve every criterion.",
+  "verification":"Execute the complete required cases on the accumulated candidate.",
+  "agentId":"engineering.backend.node","writePaths":["qualification/runner"]}
+]}
+
+The controller assigns actual task IDs, runtime workspaces, integration and QA.
+Explicit keys must be unique. Omitted keys receive stable positional identities
+for compatibility with the previous compact decision. Dependency references are
+task keys, not requirement IDs. Unknown references, cycles and repeated edges
+are rejected. Source write scopes must be explicit and disjoint across all
+subtasks, including sequential subtasks; edits to shared source files belong
+in one task. The evidence/ and data/ roots belong to each isolated task workspace,
+are excluded from canonical source snapshots/patches and may share a relative
+name between tasks. This does not grant source access or merge local directories;
+consumers require published artifacts and the existing input bindings. Similar
+names under src/, path aliases, forbidden paths and real source overlaps remain
+rejected. The compiler and raw-plan validator apply the same distinction.
+
+A consumer with one prerequisite receives its accepted candidate. With several
+prerequisites the controller creates an intermediate integration from the common
+base, receiving patches from all prerequisite ancestors in topological order.
+The consumer waits for that integration and receives its candidate. Intermediate
+joins are partial input products, never final requirement acceptance.
+
+The final integration receives every worker contribution. Independent QA verifies
+the entire selected requirements, not merely the concatenation of partial claims.
+Advancement requires all work and integration tasks accepted, one final QA tied
+to the final integration workspace, immutable candidate artifacts and no live or
+uncertain actor/lease. Completed requirement IDs remain unique. Existing source,
+patch, criterion, authorization and publication guards remain in force.
+
+If a consumer fails after partial branches were accepted, their artifacts and
+source identities are retained as inputs for the next plan. An intermediate join
+or one branch of an incomplete multi-task batch cannot become the accumulated
+source. Recovery uses a complete final integration or a prior complete single
+delivery, preserving all partial patches as evidence for explicit composition.
+
+Errors identify the actual violation: ineligible requirement, duplicate task key,
+unknown/cyclic dependency, missing/conflicting write scope, ambiguous decision or
+validator assigned to implementation. The model-visible schema restricts eligible
+requirement IDs and available implementation agents. QA is controller-owned.
+
+Planner recovery
+
+Supervised mode is opt-in through the existing objective review policy. It uses
+the existing PlanningEngine, planning_runs, planning_attempts, events and provider
+generate route. It adds no queue, worker owner or independent scheduling loop.
+All supervisory generation requires the GLM-only policy and authorized account,
+and uses the same global request gate as other GLM calls.
+
+After invalid-plan retries are exhausted, a committed invalid-plan incident for
+the current incremental revision may be reconciled once per contract version.
+The failed planning identity, attempt history, accepted candidate and advancement
+proof are preserved. A fresh fence prevents a late response from applying. The
+review includes the bounded rejected decision, actual error, allowed frontier and
+current contract. It never requests the model's private reasoning.
+
+An invalid supervised proposal requests a serial decision covering one entire
+eligible requirement. Serial fallback has no deliveries array. It preserves
+independent QA and all original criteria; it is not automatic acceptance or a
+concatenation that silently drops unmet subrequirements. If this proposal is also
+invalid, the incident remains explicit rather than looping forever. Another retry
+requires a material correction/contract version or the existing authorized flow.
+Provider failures retain the existing cause-specific backoff and quota handling.
+
+Recovery never reopens explicit pause/cancellation, a newer plan or workforce
+handover. It never repeats an uncertain prepare/external operation. Changed
+acceptance/candidate proof blocks reuse. Disabling supervised review prevents a
+late supervisory response from applying. No historical task, run, criterion or
+acceptance is rewritten to make recovery pass.
+New counterevidence not present in the failed request takes the normal fresh-plan
+path. The controller checks again at application: evidence arriving during a
+model call invalidates the old response rather than retrying its obsolete context.
+
+PLANNING_REVIEW_QUEUED records intent. PLANNING_REVIEW_APPLIED means a validated
+proposal was applied, not that the product passed. PLANNING_REVIEW_EFFECT_VERIFIED
+requires independent batch acceptance and exact candidate proof. These events
+wake the existing coordinator after commit; periodic reconciliation remains the
+recovery path for missed notifications.
+
+Qualification
+
+Database tests cover same-requirement subtasks, DAG/source bindings, intermediate
+joins, scope aliases/conflicts, partial acceptance, stale proof, duplicate
+reconciliation, quota/auth holds, late pause/disable, serial fallback and bounded
+failure. Synthetic fixtures do not certify real autonomy. Production proof must
+show the preserved verified candidate becoming useful executed work, followed by
+independent QA and external counterchecks, without a manual resume or acceptance.

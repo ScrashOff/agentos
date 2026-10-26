@@ -28,6 +28,9 @@ import { accountBridge } from './bridge.js';
 import { chatEngine, listChats, newChat, chatDetail } from './chat.js';
 import type { WorkerEngine } from './worker.js';
 import { submitObjective, objectiveDetail, feedbackObjective } from './planner.js';
+import {registerObjectiveInput} from './objective-inputs.js';
+import {configureObjectiveReview,objectiveReviews} from './objective-review.js';
+import {reconcileInheritedCancellation} from './objective-state-repair.js';
 import { cycleRoutes } from './cycles/routes.js';
 import { trustedTailnet } from './tailnet.js';
 import { panelState, panelGoal, panelTask, panelCollection } from './panel.js';
@@ -144,6 +147,13 @@ export function makeApp(engine?: WorkerEngine) {
   app.post('/api/goals', async (req) => createGoal(req.body));
   app.get('/api/workspaces', async () => accountBridge.request('worker.workspaces'));
   app.post('/api/objectives', async (req) => submitObjective(req.body));
+  app.post('/api/objectives/:id/inputs',async req=>{
+    const bearer=(req.headers.authorization??'').replace(/^Bearer /,'');
+    return registerObjectiveInput(z.uuid().parse((req.params as any).id),req.body,
+      {channel:bearer&&equal(bearer,config.apiToken)?'api-token':'operator-session'});
+  });
+  app.get('/api/objectives/:id/reviews',async req=>objectiveReviews(z.uuid().parse((req.params as any).id)));
+  app.post('/api/objectives/:id/review-policy',async req=>configureObjectiveReview(z.uuid().parse((req.params as any).id),req.body));
   app.get('/api/objectives/:id', async (req) =>
     objectiveDetail(z.uuid().parse((req.params as any).id)),
   );
@@ -271,6 +281,7 @@ export function makeApp(engine?: WorkerEngine) {
       body = z.object({ state: z.enum(['active', 'paused']) }).parse(req.body);
     return tx(async (db) => {
       await lock(db);
+      if(body.state==='active')await reconcileInheritedCancellation(db,id);
       const changed = await db.query(
         "UPDATE goals SET state=$2 WHERE id=$1 AND state IN('active','paused') RETURNING id,state",
         [id, body.state],
