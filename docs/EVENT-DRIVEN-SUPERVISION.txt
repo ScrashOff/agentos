@@ -112,3 +112,22 @@ Inspired by its mechanisms, with an independent implementation:
 The reviewed auxiliary reviewer uses 15 seconds and returns stop on failure;
 those semantics are not adopted here. The reviewed architecture document still
 lists workflow_run orchestration as future work, not proof of large-scale autonomy.
+Recurring runtime diagnostics
+
+The same environment failure can survive changing commands, quoted paths and
+stack locations. In addition to identical/alternating returns, the observer can
+request a review after at least six completed calls in its last twelve return a
+known Node runtime diagnostic, with another occurrence among the last three.
+Initial coverage is ERR_MODULE_NOT_FOUND, ERR_UNKNOWN_FILE_EXTENSION and
+ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX. This is not a general error classifier.
+
+The evidence identity uses the diagnostic family; varying commands, paths,
+stacks or occurrence counts alone do not create a new review owner. Fingerprints
+remain available for causal inspection. Existing run/fence/context, committed
+event, coalescing, provider gate, material-change and consumed-guidance rules
+still apply. Partial, redacted, unfinished and truncated traces remain inconclusive.
+
+A diagnostic can be an intentional negative test or a quoted source excerpt.
+The reviewer may continue observing without sending guidance. A suspicion never
+marks a task failed, stops/retries an actor, changes scope or grants acceptance.
+Fresh successful work invalidates a stale diagnostic review before dispatch.

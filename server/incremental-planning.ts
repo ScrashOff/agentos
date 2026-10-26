@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { DomainError } from './contracts.js';
 import { event, type DB } from './db.js';
 import { planSchema, type ObjectiveInput, type ProposedPlan } from './objective-contracts.js';
+import {isAttemptLocalWriteScope} from './attempt-local-write-scope.js';
 
 // Semantic choices only. IDs, dependencies, runtime envelopes and receipt
 // formats are controller-owned. Inspired by Ruflo's action/precondition split;
@@ -138,6 +139,7 @@ export function compileDelivery(raw: unknown, request: ObjectiveInput, previous?
     if (!item.writePaths?.length)
       invalid('WRITE_SCOPE_REQUIRED','Subtarefas no mesmo lote exigem writePaths explícitos.',{key:item.key??`part-${idx+1}`});
     for (const rawPath of item.writePaths) {
+      if(isAttemptLocalWriteScope(rawPath))continue;
       const norm = rawPath.replace(/\/+$/, '');
       if (seenPaths.some(other => other.idx !== idx && (other.path === norm || other.path.startsWith(norm + '/') || norm.startsWith(other.path + '/'))))
         invalid('WRITE_SCOPE_CONFLICT','Subtarefas precisam de escopos de escrita disjuntos; agrupe escrita compartilhada na mesma tarefa.',{path:rawPath,key:item.key??`part-${idx+1}`});
@@ -181,7 +183,7 @@ export function compileDelivery(raw: unknown, request: ObjectiveInput, previous?
     title: previous?.title ?? request.message.slice(0, 120),
     summary: `Janela paralela verificável (${items.length} entregas): ${items.map(i => i.title).join('; ')}. ${pending.length} requisito(s) ainda pendente(s).`,
     requirements,
-    assumptions: ['Aceite de lote parcial não encerra o objetivo. Entregas paralelas têm writePaths disjuntos, integração explícita e verificação independente.'],
+    assumptions: ['Aceite de lote parcial não encerra o objetivo. Entregas paralelas têm escopos de fonte disjuntos, integração explícita e QA independente. evidence/ e data/ pertencem a cada workspace isolado; consumidores precisam de artefatos publicados, não de diretórios locais implícitos.'],
     approachChange: previous ? items.map(i => i.action).join(' | ').slice(0, 4000) : '',
     incremental: {
       version: 1,

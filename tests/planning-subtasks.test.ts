@@ -6,6 +6,7 @@ import {objectiveSchema,validatePlan} from '../server/objective-contracts.js';
 import {compileDelivery,deliveryDecisionSchema,verifiedBatch} from '../server/incremental-planning.js';
 import {submitObjective,claimPlanning,applyPlannedResult,reconcilePlanning} from '../server/planner.js';
 import {refreshGoal} from '../server/service.js';
+import {isAttemptLocalWriteScope} from '../server/attempt-local-write-scope.js';
 beforeAll(()=>migrate());
 beforeEach(async()=>{
  await pool.query('TRUNCATE goals,agents,accounts,memories,events CASCADE');await seedRegistry();
@@ -65,6 +66,39 @@ it('enforces write isolation for a single requirement even when the raw plan is 
  expect(()=>validatePlan(plan,input,[],[])).toThrow();
  const agents=(await pool.query('SELECT * FROM agents')).rows;
  expect(()=>validatePlan(plan,input,agents,[])).toThrowError(/disjuntos/);
+});
+it('keeps identically named local outputs in different workspaces without a false source conflict',async()=>{
+ const input=request(),plan=compileDelivery({deliveries:[
+  {...part('a'),writePaths:['qualification/a','evidence/req-4','data/local']},
+  {...part('b'),writePaths:['qualification/b','evidence/req-4/qa-laudo.md','data/local']} ]},input);
+ validatePlan(plan,input,(await pool.query('SELECT * FROM agents')).rows,[]);
+ const {objectiveId}=await submitObjective(input);await applyPlannedResult(await claimPlanning(),plan);
+ const workers=(await pool.query("SELECT execution FROM tasks WHERE goal_id=$1 AND stage='work'",[objectiveId])).rows;
+ expect(workers).toHaveLength(2);
+ expect(new Set(workers.map(w=>w.execution.workspace)).size).toBe(2);
+ expect(new Set(workers.map(w=>w.execution.sourceWorkspace)).size).toBe(1);
+ expect(workers.every(w=>w.execution.sourceWorkspace!==w.execution.workspace)).toBe(true);
+});
+it('allows explicit local-output-only contributions while keeping final integration and independent QA',async()=>{
+ const input=request(),plan=compileDelivery({deliveries:[
+  {...part('a'),writePaths:['evidence/review']},{...part('b'),writePaths:['evidence/review','data/scratch']} ]},input);
+ validatePlan(plan,input,(await pool.query('SELECT * FROM agents')).rows,[]);
+ expect(plan.tasks.filter(t=>t.stage==='work')).toHaveLength(2);
+ expect(plan.tasks.find(t=>t.stage==='integrate')?.dependencies).toHaveLength(2);
+ expect(plan.tasks.find(t=>t.stage==='verify')?.sourceTask).toBe('integrate');
+});
+it('never treats source folders with similar names, aliases or forbidden paths as local-output exemptions',async()=>{
+ for(const value of ['src/evidence','src/data','database','evidence-source','evidence/../server','evidence/./server','evidence//x','/data','data\\x','data/.git/config','.'])
+  expect(isAttemptLocalWriteScope(value)).toBe(false);
+ const input=request();
+ for(const source of ['server/shared','src/evidence','src/data','database','evidence-source'])
+  expect(()=>compileDelivery({deliveries:[{...part('a'),writePaths:[source,'evidence/x']},
+   {...part('b'),writePaths:[source+'/child','evidence/x']} ]},input)).toThrowError(expect.objectContaining({detail:expect.objectContaining({violation:'WRITE_SCOPE_CONFLICT'})}));
+ for(const value of ['evidence/../server','evidence/./x','evidence//x'])
+  expect(()=>compileDelivery({deliveries:[part('a'),{...part('b'),writePaths:[value]}]},input)).toThrow();
+ const forbidden=compileDelivery({deliveries:[part('a'),{...part('b'),writePaths:['data/.git/config']}]},input);
+ const agents=(await pool.query('SELECT * FROM agents')).rows;
+ expect(()=>validatePlan(forbidden,input,agents,[])).toThrowError(expect.objectContaining({detail:expect.objectContaining({writePath:'data/.git/config'})}));
 });
 it('does not advance on partial accepts or the join candidate; requires final integration and QA of the whole batch',async()=>{
  const input=request(),plan=compileDelivery({deliveries:[part('a'),part('b'),part('runner',['a','b'])]},input);

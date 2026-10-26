@@ -4,7 +4,7 @@ import {event,type DB} from './db.js';
 import {verifiedBatch} from './incremental-planning.js';
 import {DomainError} from './contracts.js';
 
-export const planningContractVersion='incremental-parts-v2';
+export const planningContractVersion='incremental-parts-v3-attempt-local-outputs';
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
 /** The existing planner remains the only owner. A committed invalid-plan

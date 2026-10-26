@@ -44,3 +44,36 @@ it('rejects malformed projections and future completions rather than throwing or
   for(const extra of [{files:'invalid'},{evidence:[null]},{observedAt:'invalid'},{observedAt:new Date(1600000000000).toISOString()}])
     expect(toolLoopObservation({...observation(),...extra})).toBeNull();
 });
+const runtimeObservation=(count=12,code='ERR_MODULE_NOT_FOUND')=>({actions:Array.from({length:count},(_,i)=>
+  action(i,'node attempt-'+i+'.ts',`Error [${code}]: Cannot load /workspace/module-${i}.ts\nstack line ${i}`)),files:[],evidence:[]});
+it('observes the same recurring runtime error across different commands without asserting failure',()=>{
+ const value=toolLoopObservation(runtimeObservation());
+ expect(value).toMatchObject({pattern:'recurring_runtime_error',completedCalls:12,runtimeErrors:[{code:'ERR_MODULE_NOT_FOUND',count:12}]});
+ expect(value?.fingerprints).toHaveLength(12);expect(value).not.toHaveProperty('stop');
+ expect(JSON.stringify(value)).not.toContain('/workspace');
+});
+it.each(['ERR_UNKNOWN_FILE_EXTENSION','ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX'])('recognizes bounded %s diagnostics',code=>{
+ expect(toolLoopObservation(runtimeObservation(6,code))).toMatchObject({pattern:'recurring_runtime_error',runtimeErrors:[{code,count:6}]});
+});
+it('coalesces diagnostic identity despite changing paths, commands, stacks and occurrence counts',()=>{
+ const first=toolLoopObservation(runtimeObservation())!;
+ const second=runtimeObservation(8);second.actions=second.actions.map((a,i)=>({...a,sequence:i+20,command:'run alternate-'+i,output:a.output+'\nnew stack'}));
+ const later=toolLoopObservation(second)!;
+ expect(later.evidenceDigest).toBe(first.evidenceDigest);expect(later.materialDigest).toBe(first.materialDigest);
+ const identical=runtimeObservation(6);identical.actions=identical.actions.map(a=>({...a,command:'node same.ts',output:'Error [ERR_MODULE_NOT_FOUND]: same missing module'}));
+ expect(toolLoopObservation(identical)!.evidenceDigest).toBe(first.evidenceDigest);
+ expect(toolLoopObservation(runtimeObservation(12,'ERR_UNKNOWN_FILE_EXTENSION'))!.evidenceDigest).not.toBe(first.evidenceDigest);
+});
+it('does not escalate fewer than six diagnostics, mere documentation mentions or resolved recent calls',()=>{
+ const sparse=runtimeObservation();sparse.actions=sparse.actions.map((a,i)=>({...a,output:i<5?a.output:'bounded check '+i}));
+ expect(toolLoopObservation(sparse)).toBeNull();
+ const mentions=runtimeObservation();mentions.actions=mentions.actions.map((a,i)=>({...a,output:'documented ERR_MODULE_NOT_FOUND case '+i}));
+ expect(toolLoopObservation(mentions)).toBeNull();
+ const resolved=runtimeObservation();resolved.actions=resolved.actions.map((a,i)=>({...a,output:i<9?a.output:'new successful check '+i}));
+ expect(toolLoopObservation(resolved)).toBeNull();
+});
+it('retains partial/redacted trace protections even when runtime diagnostics recur',()=>{
+ expect(toolLoopObservation({...runtimeObservation(),traceTruncated:true})).toBeNull();
+ const partial=runtimeObservation();Object.assign(partial.actions[4],{partial:true});expect(toolLoopObservation(partial)).toBeNull();
+ const redacted=runtimeObservation();redacted.actions[4].output='[... trecho omitido ...]';expect(toolLoopObservation(redacted)).toBeNull();
+});

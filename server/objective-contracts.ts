@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { taskSchema, criterionSchema, DomainError } from './contracts.js';
+import {isAttemptLocalWriteScope} from './attempt-local-write-scope.js';
 const artifactName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}$/);
 const planCriterion = z.discriminatedUnion('type', [
   criterionSchema.options[0].extend({ name: artifactName }),
@@ -219,6 +220,7 @@ export function validatePlan(
         if (!w.writePaths.length)
           fail('Entregas paralelas no mesmo lote exigem writePaths explícitos.', { task: w.key });
         for (const rawPath of w.writePaths) {
+          if(isAttemptLocalWriteScope(rawPath))continue;
           const norm = rawPath.replace(/\/+$/, '');
           const conflict = seenPaths.find(
             other => other.key !== w.key && (other.path === norm || other.path.startsWith(norm + '/') || norm.startsWith(other.path + '/')),

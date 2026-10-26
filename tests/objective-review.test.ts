@@ -44,6 +44,10 @@ async function record(value=observation()){
     [f.taskId,JSON.stringify({runId:f.runId,observation:value})])).rows[0].id;
   return recordObjectiveLoop(f.runId,String(id),value);
 }
+const runtimeObservation=()=>{const base=observation(),start=Date.now()-10000;return {...base,actions:Array.from({length:12},(_,i)=>({
+ ...base.actions[0],id:'diagnostic-'+i,sequence:i,command:'node isolated-'+i+'.ts',
+ output:`Error [ERR_MODULE_NOT_FOUND]: Cannot load different-module-${i}.ts`,
+ startedAt:new Date(start+i*50).toISOString(),finishedAt:new Date(start+i*50+1).toISOString()}))};};
 async function current(){return (await pool.query('SELECT * FROM objective_review_signals WHERE run_id=$1',[f.runId])).rows[0];}
 async function until(state:string){await vi.waitFor(async()=>expect((await current())?.state).toBe(state),{timeout:5000,interval:25});}
 function bridge(options:{kind?:string;failGenerate?:boolean;ambiguous?:boolean;pending?:Promise<any>}={}){
@@ -84,6 +88,36 @@ it('uses one GLM review and fenced guidance, preserving criteria, snapshots and 
   expect((await pool.query('SELECT instruction_snapshot FROM runs WHERE id=$1',[f.runId])).rows[0]).toEqual(before);
   expect((await pool.query('SELECT 1 FROM acceptances WHERE run_id=$1',[f.runId])).rowCount).toBe(0);
   expect((await objectiveReviews(f.goal)).stopAuthority).toBe(false);
+});
+it('coalesces varied commands with one recurring runtime diagnostic into one advisory GLM owner',async()=>{
+ await configureObjectiveReview(f.goal,{mode:'supervised'});
+ const first=await record(runtimeObservation()),second=runtimeObservation();
+ second.actions=second.actions.map((a,i)=>({...a,sequence:i+20,command:'node changed-'+i+'.ts',output:a.output+'\nnew stack location'}));
+ expect((await record(second))?.id).toBe(first?.id);
+ expect((await current()).signal).toMatchObject({pattern:'recurring_runtime_error',runtimeErrors:[{code:'ERR_MODULE_NOT_FOUND',count:12}]});
+ const dispatch=bridge();engine=new ObjectiveReviewEngine(dispatch);await engine.tick();await until('queued_next_step');
+ await engine.tick();expect(dispatch.mock.calls.filter(c=>c[0]==='generate')).toHaveLength(1);
+ const guide=dispatch.mock.calls.find(c=>c[0]==='worker.guide')![1];
+ expect(guide).toMatchObject({runId:f.runId,runFence:f.fence,contextVersion:f.context});
+ expect(guide.facts[0].statement).toContain('intentional negatives');
+ expect(dispatch.mock.calls.some(c=>/cancel|execute/.test(c[0]))).toBe(false);
+ expect((await pool.query('SELECT count(*)::int n FROM acceptances WHERE run_id=$1',[f.runId])).rows[0].n).toBe(0);
+ expect((await pool.query('SELECT state FROM runs WHERE id=$1',[f.runId])).rows[0].state).toBe('running');
+});
+it('allows recurring diagnostics to be intentional negative tests without stopping or guiding the worker',async()=>{
+ await configureObjectiveReview(f.goal,{mode:'supervised'});await record(runtimeObservation());
+ const dispatch=bridge({kind:'continue'});engine=new ObjectiveReviewEngine(dispatch);await engine.tick();await until('monitoring');
+ await engine.tick();expect(dispatch.mock.calls.filter(c=>c[0]==='generate')).toHaveLength(1);
+ expect(dispatch.mock.calls.some(c=>c[0].startsWith('worker.'))).toBe(false);
+ expect((await pool.query('SELECT state FROM runs WHERE id=$1',[f.runId])).rows[0].state).toBe('running');
+});
+it('does not review a historical diagnostic window after fresh observations show successful work',async()=>{
+ await configureObjectiveReview(f.goal,{mode:'supervised'});await record(runtimeObservation());
+ const resolved=runtimeObservation();resolved.actions=resolved.actions.map((a,i)=>({...a,sequence:i+20,output:'new bounded successful check '+i}));
+ await record(resolved);
+ const dispatch=bridge();engine=new ObjectiveReviewEngine(dispatch);await engine.tick();
+ expect(dispatch).not.toHaveBeenCalled();expect((await current()).state).toBe('monitoring');
+ expect((await current()).error_code).toBe('PATTERN_NO_LONGER_CURRENT');
 });
 it('queues canonical input/replan feedback without broadening the live task or stopping it',async()=>{
   await configureObjectiveReview(f.goal,{mode:'supervised'});await record();
