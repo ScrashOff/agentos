@@ -788,9 +788,13 @@ export async function validateTask(taskId: string, reviewer?: string) {
             c.type === 'artifact' ||
             (Object.hasOwn(JSON.parse(bytes.toString()), c.field) &&
               JSON.parse(bytes.toString())[c.field] === c.equals);
+          // Name the missing field: a bare refusal sends the next attempt to
+          // redo work that already passed, instead of fixing the manifest.
           detail = passed
             ? 'Artefato íntegro; contrato atendido.'
-            : 'Conteúdo não atende ao contrato.';
+            : c.type === 'json_field'
+              ? `Conteúdo não atende ao contrato: ${c.name} precisa do campo "${c.field}" igual a ${JSON.stringify(c.equals)}.`
+              : 'Conteúdo não atende ao contrato.';
         } catch {
           detail = 'Artefato inválido ou corrompido.';
         }

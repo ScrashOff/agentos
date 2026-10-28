@@ -6,7 +6,7 @@ import { pool, migrate, lock, tx } from '../server/db.js';
 import { schedule,failRun } from '../server/service.js';
 import {quotaFor} from '../server/accounts.js';
 import {assertRetryProgress} from '../server/retry-progress.js';
-import {providerAvailabilityFailure} from '../shared/recovery.js';
+import {providerAvailabilityFailure,PLAN_STALL_REASON} from '../shared/recovery.js';
 import {requestRecoveryReview} from '../server/recovery-supervision.js';
 import { hash } from '../server/memory.js';
 import { config } from '../server/config.js';
@@ -285,6 +285,24 @@ it('rejects stale stop proof and deduplicates simultaneous recovery', async () =
   ]);
   expect(r.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
   expect((await pool.query('SELECT * FROM artifacts WHERE run_id=$1', [f.run])).rowCount).toBe(2);
+});
+it('returns an objective parked as stalled to executing when its attempt is readmitted', async () => {
+  const f = await fixture();
+  await pool.query(
+    "INSERT INTO objectives(id,request,request_hash,mode,status,reason) VALUES($1::uuid,'{}'::jsonb,'h-'||$1::text,'execute','waiting_external',$2)",
+    [f.goal, PLAN_STALL_REASON]);
+  await resumeFailedHarness(f.run, f.fence, f.proof);
+  expect((await pool.query('SELECT status,reason FROM objectives WHERE id=$1', [f.goal])).rows[0])
+    .toEqual({ status: 'executing', reason: null });
+});
+it('keeps other external waits when an attempt is readmitted', async () => {
+  const f = await fixture();
+  await pool.query(
+    "INSERT INTO objectives(id,request,request_hash,mode,status,reason) VALUES($1::uuid,'{}'::jsonb,'h-'||$1::text,'execute','waiting_external','Revisão supervisionada desabilitada.')",
+    [f.goal]);
+  await resumeFailedHarness(f.run, f.fence, f.proof);
+  expect((await pool.query('SELECT status FROM objectives WHERE id=$1', [f.goal])).rows[0].status)
+    .toBe('waiting_external');
 });
 it('leaves uncertain live processes untouched when stop cannot be confirmed', async () => {
   const f = await fixture();

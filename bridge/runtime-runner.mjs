@@ -2,6 +2,7 @@ import { assertModelRoute } from './model-policy.mjs';
 import os from 'node:os';
 import { createRuntimeGuidanceServer } from './runtime-guidance.mjs';
 import { prepareSandboxLocalhost } from './sandbox-localhost.mjs';
+import { prepareSandboxIdentity } from './sandbox-identity.mjs';
 import { prepareRepairFinalization, finalizeRepairArtifacts, repairFinalizationInstruction } from './repair-finalizer.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -16,6 +17,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { toGeneration, completion, fromMessages, messagesEvents } from './runtime-gateway.mjs';
 import { bufferedModelChannel, WORKER_MODEL_TIMEOUT_MS } from './runtime-model-channel.mjs';
 import { modelRequestTiming } from './model-request-timing.mjs';
+import { failedCallDiagnostic, harnessCallBudgetMs, isCompactionRequest, modelRetryDelay, providerContentBlock } from './model-retry.mjs';
+import { sourcePatchInstruction } from './source-patch-contract.mjs';
 import { workspaceOperation } from './workspaces.mjs';
 import { materializeSourceInputs } from './source-inputs.mjs';
 import {hydrateArtifactInputBundle,referencedInputLimitBytes} from './artifact-input-bundle.mjs';
@@ -119,6 +122,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     throw e;
   }
   const loopbackHosts = await prepareSandboxLocalhost(home);
+  const sandboxIdentity = await prepareSandboxIdentity(dir);
   const outputContract = deliveryContract(params.runId, params.deliveryContract?.artifacts?.map(a => a.name) ?? [], extractPromptJsonFields(params.prompt));
   const repairSnapshot = await prepareRepairFinalization(params,
     () => workspaceOperation({action: 'inspect', workspace: params.workspace}), home);
@@ -196,7 +200,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     // over the queue wait, which is the one thing a permit must cover.
     const gatedRequest = inGlmRequestLane({ accountId: params.accountId, model: params.model });
     const requestTimeout = gatedRequest ? null : AbortSignal.timeout(WORKER_MODEL_TIMEOUT_MS);
-    const timing = modelRequestTiming({ gated: gatedRequest });
+    let timing = modelRequestTiming({ gated: gatedRequest });
     try {
       if (req.method !== 'POST' || !wire) {
         res.writeHead(404);
@@ -229,7 +233,9 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         }
       }
       if(Date.now()-handoffAt>60000)await checkpointHandoff();
-      const input = (wire === 'messages' ? fromMessages : toGeneration)(JSON.parse(body), {
+      const request = JSON.parse(body);
+      const compaction = isCompactionRequest(request);
+      const input = (wire === 'messages' ? fromMessages : toGeneration)(request, {
         accountId: params.accountId,
         model: params.model,
         reasoning: params.model === 'glm-5.3-flash' ? 'low' : 'high',
@@ -241,20 +247,57 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         contextBytes: body.length,
         accountId: params.accountId,
         model: params.model,
+        ...(compaction ? { compaction: true } : {}),
       });
       const gateEmit = (kind, payload) => {
         timing.observe(kind);
         emit(kind, payload);
       };
-      // Own admission here as well: an older long-lived bridge can load this
-      // runtime while retaining its original ungated generate callback. Newer
-      // bridges recognize the private symbol and do not acquire twice.
-      const result = await withAccountRequestGate(
-        gatedRequest ? { ...input, runId: params.runId, requestTimeoutMs: glmRequestBudgetMs() } : input,
-        requestTimeout ? AbortSignal.any([channel.signal, requestTimeout]) : channel.signal,
-        (requestSignal) => generate(input, requestSignal, GLM_REQUEST_ADMITTED),
-        gateEmit,
-      );
+      let result;
+      for (let retry = 0; ; retry++) {
+        try {
+          // Own admission here as well: an older long-lived bridge can load this
+          // runtime while retaining its original ungated generate callback. Newer
+          // bridges recognize the private symbol and do not acquire twice.
+          // Every repeat queues for a fresh permit, so the GLM limit still holds.
+          result = await withAccountRequestGate(
+            gatedRequest
+              ? { ...input, runId: params.runId, requestTimeoutMs: harnessCallBudgetMs(glmRequestBudgetMs(), compaction) }
+              : input,
+            requestTimeout ? AbortSignal.any([channel.signal, requestTimeout]) : channel.signal,
+            (requestSignal) => generate(input, requestSignal, GLM_REQUEST_ADMITTED),
+            gateEmit,
+          );
+          break;
+        } catch (e) {
+          const wait = modelRetryDelay(e, retry, {
+            aborted: channel.signal.aborted || Boolean(requestTimeout?.aborted),
+            compaction,
+            messages: input.messages,
+          });
+          if (wait === null) {
+            // A content refusal is final for this session; say so in the record.
+            if (!channel.signal.aborted && providerContentBlock(e, input.messages))
+              emit('MODEL_ERROR', { code: 'MODEL_REQUEST_FAILED', accountId: params.accountId, model: params.model, retry: retry + 1, ...failedCallDiagnostic(e, input.messages) });
+            throw e;
+          }
+          // Health still sees the failed call; the attempt keeps its work.
+          emit('MODEL_ERROR', {
+            code: channel.failureCode(e),
+            accountId: params.accountId,
+            model: params.model,
+            retrying: true,
+            retry: retry + 1,
+            delayMs: wait,
+            ...failedCallDiagnostic(e, input.messages),
+            ...timing.sample(),
+          });
+          await delay(wait, undefined, { signal: channel.signal });
+          // Each repeat is its own provider call, with its own queue and admission.
+          timing = modelRequestTiming({ gated: gatedRequest });
+          timing.start();
+        }
+      }
       for (const k of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'])
         usage[k] += result.message.usage?.[k] ?? 0;
       emit('MODEL_RESPONSE', {
@@ -337,6 +380,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     '/etc/ld.so.cache',
     '/etc/ld.so.cache',
     ...loopbackHosts.mount,
+    ...sandboxIdentity,
     '--ro-bind',
     '/opt/deepseek-harness/node',
     '/opt/deepseek-harness/node',
@@ -585,7 +629,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     const prompt = `${params.prompt}${roleClosure}${sourceInputs.instruction}\n\nContext manifest and shared memory: /home/agent/context.json\nInputs: /home/agent/inputs/\nRoutine code errors, failing tests and missing references that can be fixed in this workspace are implementation work, not external blockers. When assigned implementation, edit and test until the scoped task is done; do not return only a diagnosis of a fixable error. Do not expand scope or claim success without evidence. Output: respond with JSON {"summary":"...","artifacts":${JSON.stringify(exampleArtifacts)}}. Artifacts must be real files under this workspace, not claimed executions. Return a limitation only for an actual unmet external dependency or unresolved verified defect. Never claim independent acceptance.`;
     const receipt = await rpc('session/prompt', {
       sessionId: params.runId,
-      contentBlocks: [{ type: 'text', text: prompt + museTaskDeliveryInstruction(params.deliveryContract) + runtimeHandoffInstruction + runtimeArtifactInstruction + deliveryManifestInstructionFor(outputContract) + (repairSnapshot ? repairFinalizationInstruction : '') }],
+      contentBlocks: [{ type: 'text', text: prompt + museTaskDeliveryInstruction(params.deliveryContract) + runtimeHandoffInstruction + runtimeArtifactInstruction + sourcePatchInstruction + deliveryManifestInstructionFor(outputContract) + (repairSnapshot ? repairFinalizationInstruction : '') }],
     });
     receiptId = receipt.messageId;
     if (guidanceIdentity) {
