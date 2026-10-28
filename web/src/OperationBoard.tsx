@@ -10,6 +10,7 @@ import {
 import { latestObservation } from './task-attention';
 import { ScopedPlanners } from './ScopedPlanners';
 import {deliveryStatus} from './delivery-status';
+import { SourceDownload } from './SourceDownload';
 import './operation-board.css';
 type Row = Record<string, any>;
 const shortAge = (at?: string) => {
@@ -144,6 +145,7 @@ export function OperationBoard({
               {healthy ? 'Supervisão ativa' : 'Supervisão indisponível'}
             </span>
           </header>
+          <SourceDownload goal={detail.goal} />
           <div className="operation-productivity-line" aria-label="Métrica de produtividade">
             {operationProductivityLine(detail, data).line}
           </div>

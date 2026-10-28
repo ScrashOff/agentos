@@ -29,6 +29,7 @@ import { chatEngine, listChats, newChat, chatDetail } from './chat.js';
 import type { WorkerEngine } from './worker.js';
 import { submitObjective, objectiveDetail, feedbackObjective } from './planner.js';
 import {registerObjectiveInput} from './objective-inputs.js';
+import {objectiveSource,objectiveSourceSummary,objectiveSourceArchive} from './objective-source-archive.js';
 import {configureObjectiveReview,objectiveReviews} from './objective-review.js';
 import {reconcileInheritedCancellation} from './objective-state-repair.js';
 import { cycleRoutes } from './cycles/routes.js';
@@ -157,6 +158,19 @@ export function makeApp(engine?: WorkerEngine) {
   app.get('/api/objectives/:id', async (req) =>
     objectiveDetail(z.uuid().parse((req.params as any).id)),
   );
+  app.get('/api/objectives/:id/source', async (req) =>
+    objectiveSourceSummary(await objectiveSource(z.uuid().parse((req.params as any).id))),
+  );
+  app.get('/api/objectives/:id/source.zip', async (req, reply) => {
+    const zip = await objectiveSourceArchive(z.uuid().parse((req.params as any).id));
+    return reply
+      .header('Content-Type', 'application/zip')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Cache-Control', 'no-store')
+      .header('X-Archive-SHA256', zip.digest)
+      .header('Content-Disposition', `attachment; filename="${zip.fileName}"`)
+      .send(zip.bytes);
+  });
   app.get('/api/objectives/:id/plan', async (req) =>
     objectiveDetail(z.uuid().parse((req.params as any).id)),
   );
