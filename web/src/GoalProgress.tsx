@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   Clock,
+  Cpu,
   Download,
   FileText,
 } from 'lucide-react';
@@ -20,6 +21,7 @@ import { ObjectivePlan } from './ObjectivePlan';
 import { OperationBoard } from './OperationBoard';
 import { goalStanding } from './goal-standing.js';
 import { taskFlow } from './operation-state';
+import { runRoute } from './run-route';
 
 type Row = Record<string, any>;
 const activeStates = new Set(['running', 'cancelling', 'reconciling']);
@@ -326,6 +328,16 @@ export function GoalDirectory({
               </span>
               {hasDelivery && <span>{delivery.integrated}/{delivery.total} integrações validadas</span>}
             </div>
+            {!goal.merged_into &&
+              active.map((task: Row) => {
+                const run = latestRun(task, data.runs);
+                return run ? (
+                  <p className="operation-live-route" key={task.id}>
+                    <Cpu size={13} />
+                    {runRoute(run, data.accounts)} · {task.title}
+                  </p>
+                ) : null;
+              })}
             <p>
               {/* A named step in flight is the most useful sentence; otherwise
                   say plainly what the objective is waiting on. */}

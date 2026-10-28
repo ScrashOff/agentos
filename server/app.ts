@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
@@ -30,6 +29,7 @@ import type { WorkerEngine } from './worker.js';
 import { submitObjective, objectiveDetail, feedbackObjective } from './planner.js';
 import {registerObjectiveInput} from './objective-inputs.js';
 import {objectiveSource,objectiveSourceSummary,objectiveSourceArchive} from './objective-source-archive.js';
+import {autonomyLive} from './autonomy-live.js';
 import {configureObjectiveReview,objectiveReviews} from './objective-review.js';
 import {reconcileInheritedCancellation} from './objective-state-repair.js';
 import { cycleRoutes } from './cycles/routes.js';
@@ -89,15 +89,7 @@ export function makeApp(engine?: WorkerEngine) {
       return reply.status(401).send({ message: 'Inicie uma sessão local.' });
   });
   registerOperationsApi(app);
-  app.get('/api/autonomy', async (_req, reply) => {
-    try {
-      const bytes = await readFile('/var/lib/agentos-autonomy/latest.json', 'utf8');
-      if (bytes.length > 512 * 1024) throw Error('OBSERVER_SNAPSHOT_SIZE');
-      return JSON.parse(bytes);
-    } catch {
-      return reply.status(503).send({ error: 'AUTONOMY_OBSERVER_UNAVAILABLE', message: 'Observador independente indisponível.' });
-    }
-  });
+  app.get('/api/autonomy', async () => autonomyLive());
   app.get('/api/session', async (_req, reply) => {
     reply.header(
       'Set-Cookie',

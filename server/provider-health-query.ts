@@ -5,19 +5,25 @@ import { buildProviderHealth, type ProviderHealth, type ProviderSample } from '.
 // that one slow reply does not read as an outage.
 const WINDOW_MINUTES = 30;
 
-/** Health per account over the recent window, derived from recorded model events. */
+/** Health per account over the recent window, derived from recorded model events.
+ * Events name the account by bridge id (with colons), by panel id, or not at all;
+ * the last ones are attributed through the run that emitted them. */
 export async function providerHealth(accountIds: string[]): Promise<Record<string, ProviderHealth>> {
   if (!accountIds.length) return {};
   const { rows } = await pool.query(
-    `SELECT payload->>'accountId' account_id, kind, payload->>'code' code,
-            (payload->>'providerMs')::bigint provider_ms,
-            (payload->>'queuedMs')::bigint queued_ms,
-            floor(extract(epoch from created_at)*1000)::bigint at
-       FROM events
-      WHERE kind IN('MODEL_RESPONSE','MODEL_ERROR')
-        AND created_at > now() - ($2 || ' minutes')::interval
-        AND payload->>'accountId' = ANY($1::text[])
-      ORDER BY created_at`,
+    `SELECT coalesce(a.id, r.account_id) account_id, e.kind, e.payload->>'code' code,
+            (e.payload->>'providerMs')::bigint provider_ms,
+            (e.payload->>'queuedMs')::bigint queued_ms,
+            floor(extract(epoch from e.created_at)*1000)::bigint at
+       FROM events e
+       LEFT JOIN accounts a ON a.id = e.payload->>'accountId' OR a.bridge_id = e.payload->>'accountId'
+       LEFT JOIN runs r ON e.payload->>'accountId' IS NULL
+        AND r.id = CASE WHEN e.payload->>'runId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN (e.payload->>'runId')::uuid END
+      WHERE e.kind IN('MODEL_RESPONSE','MODEL_ERROR')
+        AND e.created_at > now() - ($2 || ' minutes')::interval
+        AND coalesce(a.id, r.account_id) = ANY($1::text[])
+      ORDER BY e.created_at`,
     [accountIds, String(WINDOW_MINUTES)],
   );
   const samples: ProviderSample[] = rows.map((r: any) => ({
