@@ -314,6 +314,7 @@ async function executeMuse(params, signal, account, emit) {
       '--setenv',
       'HOME',
       '/home/agent',
+      '--setenv', 'PYTHONPYCACHEPREFIX', '/home/agent/.cache/python',
       '--setenv',
       'PATH',
       '/opt/deepseek-harness/node/bin:/usr/bin:/bin',

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile, realpath, stat, readdir } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { GLM_ACCOUNT, GLM_REQUEST_ADMITTED, withAccountRequestGate } from './gated-generation.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -160,7 +160,11 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
   };
   const gateway = createServer(async (req, res) => {
     const channel = bufferedModelChannel(res, signal);
-    // GLM waits for a host-wide permit before its provider timeout starts.
+    const requestId = randomUUID();
+    let requestSequence;
+    // GLM uses a semantic-idle watchdog in its actual provider transport,
+    // after admission. Queuing and a progressing stream do not spend a fixed
+    // wall-clock generation deadline; caller cancellation still owns the run.
     const gatedRequest = params.accountId === GLM_ACCOUNT;
     const requestTimeout = gatedRequest ? null : AbortSignal.timeout(WORKER_MODEL_TIMEOUT_MS);
     try {
@@ -200,9 +204,10 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
         model: params.model,
         reasoning: params.model === 'glm-5.3-flash' ? 'low' : 'high',
       });
-      requests++;
+      input.requestId = requestId;
+      requestSequence = ++requests;
       emit('MODEL_REQUEST', {
-        requests,
+        requestId, requests: requestSequence,
         contextBytes: body.length,
         accountId: params.accountId,
         model: params.model,
@@ -211,7 +216,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
       // runtime while retaining its original ungated generate callback. Newer
       // bridges recognize the private symbol and do not acquire twice.
       const result = await withAccountRequestGate(
-        gatedRequest ? { ...input, runId: params.runId, requestTimeoutMs: WORKER_MODEL_TIMEOUT_MS } : input,
+        gatedRequest ? { ...input, runId: params.runId } : input,
         requestTimeout ? AbortSignal.any([channel.signal, requestTimeout]) : channel.signal,
         (requestSignal) => generate(input, requestSignal, GLM_REQUEST_ADMITTED),
         emit,
@@ -219,14 +224,14 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
       for (const k of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'])
         usage[k] += result.message.usage?.[k] ?? 0;
       emit('MODEL_RESPONSE', {
-        requests,
+        requestId, requests: requestSequence,
         stopReason: result.message.stopReason,
         tokens: result.message.usage?.totalTokens ?? null,
       });
       channel.finish(completion(result.message, params.model));
     } catch (e) {
       gatewayError = channel.failureCode(requestTimeout?.aborted ? requestTimeout.reason : e);
-      emit('MODEL_ERROR', { code: gatewayError });
+      emit('MODEL_ERROR', { requestId, requests: requestSequence, code: gatewayError });
       channel.fail(gatewayError);
       // A broken provider call must not leave an apparently running, idle agent loop.
       fail(error(gatewayError));
@@ -330,6 +335,7 @@ export async function runHarness(params, signal, generate, emit = () => {}) {
     '--setenv',
     'HOME',
     '/home/agent',
+    '--setenv', 'PYTHONPYCACHEPREFIX', '/home/agent/.cache/python',
     '--setenv',
     'PATH',
     '/opt/deepseek-harness/node/bin:/usr/bin:/bin',

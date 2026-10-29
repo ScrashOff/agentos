@@ -4,12 +4,14 @@ import path from 'node:path';
 import { pool } from './db.js';
 
 /** Exactly the publication digest: paths and bytes, including docs/dist; never
- * follow symlinks or sign mutable dependency/test directories. */
+ * follow symlinks or sign mutable dependency/test directories. Runtime
+ * bytecode caches (__pycache__) are generated inside the release tree and
+ * must never change the digest of an already published release. */
 export async function workerSourceDigest(root: string) {
   const files: string[] = [];
   const visit = async (directory: string) => {
     for (const name of await readdir(directory)) {
-      if (['node_modules', '.local-test', '.git'].includes(name)) continue;
+      if (['node_modules', '.local-test', '.git', '__pycache__'].includes(name)) continue;
       const filename = path.join(directory, name),
         info = await lstat(filename);
       if (info.isSymbolicLink()) continue;

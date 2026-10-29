@@ -4,6 +4,7 @@
 // Only typed availability evidence leaves this module: an upstream body never
 // becomes an error message, an event or an artifact.
 import { classifyProviderError } from './opencode-provider-error.mjs';
+import { semanticModelWatchdog, readAbortableModelBody, modelAbortFailure, MODEL_IDLE_TIMEOUT_MS } from './semantic-model-watchdog.mjs';
 
 export const RETRY_ATTEMPTS = 3;
 export const RETRY_BUDGET_MS = 30000;
@@ -103,14 +104,21 @@ function buildMessage({ text, thinking = '', calls, finish, usage }) {
 /** Consume one chat-completions SSE body into the same internal message.
  * This provider streams at a few tokens per second, so a long generation that
  * is not streamed is one silent request held open for many minutes. */
-export async function readCompletionsStream(body, signal, onProgress, now = () => Date.now()) {
+export async function readCompletionsStream(body, signal, onProgress, now = () => Date.now(), onSemanticProgress, onBodyPartial) {
   const decoder = new TextDecoder();
   const startedAt = now();
-  let chunks = 0, reportedAt = 0;
+  let chunks = 0, reportedAt = -Infinity, reportedSemantic = 0, semanticCharacters = 0;
   const calls = new Map();
-  let buffer = '', text = '', thinking = '', finish, usage, bytes = 0, done = false;
-  for await (const part of body) {
-    if (signal?.aborted) throw cancelled();
+  let buffer = '', text = '', thinking = '', finish, usage, bytes = 0, done = false, bodyObserved = false;
+  const counters = () => ({characters:text.length, reasoningCharacters:thinking.length,
+    toolCharacters:[...calls.values()].reduce((n,c)=>n+c.arguments.length,0),
+    semanticCharacters, chunks, elapsedMs:now()-startedAt});
+  for await (const part of readAbortableModelBody(body, signal)) {
+    // Once any SSE body arrived, even an incomplete first JSON frame cannot be
+    // replayed. This receipt is deliberately separate from semantic liveness:
+    // comments/usage/partial framing never renew the idle watchdog.
+    if (part.byteLength && !bodyObserved) { bodyObserved = true; onBodyPartial?.(); }
+    const semanticBeforePart = semanticCharacters;
     chunks++;
     bytes += part.byteLength;
     if (bytes > MAX_RESPONSE_BYTES) throw failure('MODEL_RESPONSE_TOO_LARGE');
@@ -131,30 +139,49 @@ export async function readCompletionsStream(body, signal, onProgress, now = () =
       if (!choice) continue;
       if (choice.finish_reason) finish = choice.finish_reason;
       const delta = choice.delta ?? {};
-      if (typeof delta.reasoning_content === 'string') thinking += delta.reasoning_content;
-      if (typeof delta.content === 'string') text += delta.content;
+      let added = 0;
+      if (typeof delta.reasoning_content === 'string') { thinking += delta.reasoning_content; added += delta.reasoning_content.length; }
+      if (typeof delta.content === 'string') { text += delta.content; added += delta.content.length; }
       for (const call of delta.tool_calls ?? []) {
-        // Deltas carry the id and name once and then append arguments.
         const index = call.index ?? calls.size;
         const current = calls.get(index) ?? { index, id: undefined, name: undefined, arguments: '' };
-        if (call.id) current.id = call.id;
-        if (call.function?.name) current.name = call.function.name;
-        if (call.function?.arguments) current.arguments += call.function.arguments;
+        if (typeof call.id === 'string' && call.id && call.id !== current.id) {
+          current.id = call.id; added += call.id.length;
+        }
+        if (typeof call.function?.name === 'string' && call.function.name && call.function.name !== current.name) {
+          current.name = call.function.name; added += call.function.name.length;
+        }
+        if (typeof call.function?.arguments === 'string') { current.arguments += call.function.arguments; added += call.function.arguments.length; }
         calls.set(index, current);
       }
+      if (added > 0) {
+        semanticCharacters += added;
+        // Unthrottled and content-free. The watchdog cannot depend on telemetry cadence.
+        onSemanticProgress?.(semanticCharacters);
+      }
     }
-    // Throttled: a few tokens per second would otherwise write continuously.
-    if (onProgress && now() - reportedAt >= PROGRESS_INTERVAL_MS) {
-      reportedAt = now();
-      onProgress({ characters: text.length, reasoningCharacters: thinking.length,
-        toolCharacters: [...calls.values()].reduce((n,c)=>n+c.arguments.length,0), chunks, elapsedMs: now() - startedAt });
+    // Neither empty chunks, comments, usage nor finish markers renew progress.
+    if (onProgress && semanticCharacters > semanticBeforePart && semanticCharacters > reportedSemantic && now() - reportedAt >= PROGRESS_INTERVAL_MS) {
+      reportedAt = now(); reportedSemantic = semanticCharacters;
+      onProgress(counters());
     }
   }
-  if (signal?.aborted) throw cancelled();
+  if (signal?.aborted) throw modelAbortFailure(signal);
   if (buffer.trim()) throw failure('MODEL_INCOMPLETE_RESPONSE');
   const message = buildMessage({ text, thinking, calls: [...calls.values()].sort((a, b) => a.index - b.index), finish, usage });
-  onProgress?.({ characters: text.length, reasoningCharacters: thinking.length, chunks, elapsedMs: now() - startedAt, done: true });
+  onProgress?.({...counters(),done:true});
   return message;
+}
+
+async function readCompletionsJson(body, signal, onPartial) {
+  const parts=[]; let bytes=0;
+  for await (const part of readAbortableModelBody(body,signal)) {
+    if (part.byteLength) onPartial(); // An incomplete JSON body is never replayed.
+    bytes += part.byteLength;
+    if (bytes > MAX_RESPONSE_BYTES) throw failure('MODEL_RESPONSE_TOO_LARGE');
+    parts.push(part);
+  }
+  return fromCompletionsResponse(JSON.parse(Buffer.concat(parts).toString('utf8')));
 }
 
 function typedFailure(failure) {
@@ -188,7 +215,8 @@ export function backoffDelay(attempt, retryAfterSeconds, random = Math.random) {
   return Math.min(500 * 2 ** attempt + random() * 250, MAX_DELAY_MS);
 }
 
-export function openAICompletionsFallback({ fetch: fetchImpl = fetch, random = Math.random } = {}) {
+export function openAICompletionsFallback({ fetch: fetchImpl = fetch, random = Math.random,
+  idleTimeoutMs = MODEL_IDLE_TIMEOUT_MS, now = () => Date.now(), timers } = {}) {
   return {
     streamSimple(model, { systemPrompt, messages, tools }, options = {}) {
       const resultPromise = (async () => {
@@ -218,48 +246,54 @@ export function openAICompletionsFallback({ fetch: fetchImpl = fetch, random = M
           body: JSON.stringify(body),
           signal: options.signal,
         };
-        const deadline = Date.now() + RETRY_BUDGET_MS;
+        const deadline = now() + RETRY_BUDGET_MS;
         for (let attempt = 0; ; attempt++) {
           if (options.signal?.aborted) throw cancelled();
           const last = attempt >= RETRY_ATTEMPTS - 1;
-          let response;
+          const watchdog = semanticModelWatchdog(options.signal,idleTimeoutMs,timers);
+          let response, partial = false, retry;
           try {
-            response = await fetchImpl(url, request);
-          } catch (error) {
-            if (options.signal?.aborted) throw cancelled();
-            if (last) throw failure('MODEL_REQUEST_FAILED');
-            const delay = backoffDelay(attempt, null, random);
-            if (Date.now() + delay > deadline) throw failure('MODEL_REQUEST_FAILED');
-            options.onRetry?.({attempt:attempt+1,code:'MODEL_REQUEST_FAILED',delayMs:delay});
-            await wait(delay, options.signal);
-            continue;
-          }
-          if (response.ok) {
-            try {
+            response = await fetchImpl(url, {...request,signal:watchdog.signal});
+            if (watchdog.signal.aborted) throw modelAbortFailure(watchdog.signal);
+            if (response.ok) {
+              const progress = () => { partial = true; watchdog.progress(); };
               return /event-stream/i.test(response.headers.get('content-type') ?? '')
-                ? await readCompletionsStream(response.body, options.signal, options.onProgress)
-                : fromCompletionsResponse(await response.json());
-            } catch (error) {
-              if (options.signal?.aborted) throw cancelled();
+                ? await readCompletionsStream(response.body,watchdog.signal,options.onProgress,now,progress,()=>{partial=true;})
+                : await readCompletionsJson(response.body,watchdog.signal,()=>{partial=true;});
+            }
+            throw typedFailure(await classifyProviderError(response));
+          } catch (error) {
+            // Caller cancellation/gate loss has precedence over a racing idle timer.
+            // The owning gate preserves its original abort reason on unwind.
+            if (options.signal?.aborted) throw cancelled();
+            if (watchdog.signal.aborted) throw modelAbortFailure(watchdog.signal);
+            if (response?.ok) {
               const code = ['MODEL_OUTPUT_LIMIT','MODEL_RESPONSE_TOO_LARGE','MISSING_MODEL_RESPONSE',
                 'MODEL_INCOMPLETE_RESPONSE'].includes(error.code) ? error.code : 'MODEL_INCOMPLETE_RESPONSE';
               const delay = backoffDelay(attempt,null,random);
-              if (last || code === 'MODEL_OUTPUT_LIMIT' || code === 'MODEL_RESPONSE_TOO_LARGE' || Date.now()+delay>deadline)
+              if (partial || last || code === 'MODEL_OUTPUT_LIMIT' || code === 'MODEL_RESPONSE_TOO_LARGE' || now()+delay>deadline)
                 throw failure(code);
-              options.onRetry?.({attempt:attempt+1,code,delayMs:delay});
-              await wait(delay,options.signal);
-              continue;
+              retry={attempt:attempt+1,code,delayMs:delay};
+            } else if (response) {
+              const retryable = error.code === 'RATE_LIMIT' || error.status >= 500;
+              if (!retryable || last) throw error;
+              const delay=backoffDelay(attempt,error.retryAfterSeconds,random);
+              if (now()+delay>deadline) throw error;
+              retry={attempt:attempt+1,code:error.code,status:error.status,delayMs:delay};
+            } else {
+              const delay=backoffDelay(attempt,null,random);
+              if(last || now()+delay>deadline) throw failure('MODEL_REQUEST_FAILED');
+              retry={attempt:attempt+1,code:'MODEL_REQUEST_FAILED',delayMs:delay};
             }
+          } finally {
+            watchdog.dispose();
+            // Readers await cancellation themselves; also await unconsumed/error
+            // bodies before retry/return so the gate cannot release a live transport.
+            if (response?.body && !response.body.locked && typeof response.body.cancel === 'function')
+              await response.body.cancel().catch(()=>{});
           }
-          const providerFailure = await classifyProviderError(response);
-          // Quota and authentication are states of the account, not transient
-          // congestion: retrying them wastes a permit and hides the real cause.
-          const retryable = providerFailure.code === 'RATE_LIMIT' || providerFailure.status >= 500;
-          if (!retryable || last) throw typedFailure(providerFailure);
-          const delay = backoffDelay(attempt, providerFailure.retryAfterSeconds, random);
-          if (Date.now() + delay > deadline) throw typedFailure(providerFailure);
-          options.onRetry?.({attempt:attempt+1,code:providerFailure.code,status:providerFailure.status,delayMs:delay});
-          await wait(delay, options.signal);
+          options.onRetry?.(retry);
+          await wait(retry.delayMs,options.signal);
         }
       })().catch(error => {
         options.onFailure?.({code: /^[A-Z_]{3,60}$/.test(error.code ?? '') ? error.code : 'MODEL_REQUEST_FAILED',

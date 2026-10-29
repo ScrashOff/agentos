@@ -1,0 +1,38 @@
+MODEL PROGRESS AND PYTHON CACHE ISOLATION
+
+Long GLM responses use a semantic-idle watchdog after admission to the shared
+request gate. Actual text, reasoning or tool-call progress renews the watchdog;
+SSE comments, keepalives and role-only deltas do not. Caller cancellation still
+wins, and the gate remains owned until reader cancellation has settled.
+
+Runtime requests carry a generated requestId and a monotonic sequence. The
+control-plane bridge accepts only advancing, internally consistent counters for
+an announced active request. Duplicate/reordered observations, finished request
+IDs, heartbeats and request-start events cannot keep an idle execution alive.
+Concurrent requests retain their own sequence when their responses finish out
+of order. Progress proves liveness, not successful task delivery or permission
+to interrupt another worker.
+
+MODEL_IDLE_TIMEOUT is a typed, bounded diagnostic. It follows transient planning
+recovery and enters the supervisor window only for the current stopped attempt.
+The diagnostic does not disclose provider text, authorize a retry by itself or
+turn uncertain process termination into confirmed cancellation.
+
+The separate generic requestModel transport retains its idle and total timeout
+backstops. The GLM completion adapter uses the semantic watchdog; this change
+does not remove every timeout from every provider or from command execution.
+
+Harness, OpenCode and Muse sandboxes direct Python bytecode to
+/home/agent/.cache/python with PYTHONPYCACHEPREFIX. Syntax checks can therefore
+run against read-only candidate sources without generating source-tree binaries.
+Workspace collection excludes __pycache__ and .pyc, while publication readiness
+ignores bytecode cache directories. Other binary/symlink/source-integrity guards
+remain in force; excluding a cache is not acceptance of an arbitrary binary.
+
+Tests cover progressing vs silent streams, ignored keepalives, caller abort,
+reader unwinding, request identity/replay, typed recovery and real Bubblewrap
+Python cache behavior. These isolated checks do not certify continuous autonomy.
+
+The optional examples/openkernel-controller package demonstrates a separate
+operator-owned external effect boundary. It is not installed into the runtime
+and does not include account credentials, candidate kernels or official results.

@@ -226,6 +226,7 @@ function safeError(error) {
       'AUTH_REQUIRED',
       'QUOTA_EXCEEDED',
       'MODEL_TIMEOUT',
+      'MODEL_IDLE_TIMEOUT',
       'CONTEXT_TOO_LARGE',
       'GLM_GATE_UNAVAILABLE',
       'GLM_GATE_LOST',
@@ -402,6 +403,11 @@ async function generate(params, signal, emit, admission) {
     params,
     signal,
     async (requestSignal) => {
+      // The worker announces this identity before admission. Direct generate
+      // calls get a private identity too; provider payloads cannot replace it.
+      const requestId = typeof params.requestId === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.requestId)
+        ? params.requestId : randomUUID();
       const stream = provider.streamSimple(
         model,
         { systemPrompt: params.system ?? '', messages: params.messages, tools: params.tools ?? [] },
@@ -411,9 +417,18 @@ async function generate(params, signal, emit, admission) {
           reasoning: params.reasoning ?? 'low',
           transport: 'sse',
           maxTokens: params.maxOutputTokens ?? 4096,
-          onProgress: progress => emit('MODEL_STREAM_PROGRESS',progress),
-          onRetry: retry => emit('MODEL_REQUEST_RETRY',retry),
-          onFailure: failure => emit('MODEL_REQUEST_DIAGNOSTIC',failure),
+          onProgress: progress => emit('MODEL_STREAM_PROGRESS', {
+            requestId,
+            characters: progress.characters,
+            reasoningCharacters: progress.reasoningCharacters,
+            toolCharacters: progress.toolCharacters,
+            semanticCharacters: progress.semanticCharacters,
+            chunks: progress.chunks,
+            elapsedMs: progress.elapsedMs,
+            done: progress.done === true,
+          }),
+          onRetry: retry => emit('MODEL_REQUEST_RETRY', { ...retry, requestId }),
+          onFailure: failure => emit('MODEL_REQUEST_DIAGNOSTIC', { ...failure, requestId }),
         },
       );
       const result = await stream.result();

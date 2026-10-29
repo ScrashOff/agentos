@@ -38,6 +38,18 @@ class WorkspaceContracts(unittest.TestCase):
         gen2=m.ROOT/"test/one/.local-test/artifacts";gen2.mkdir(parents=True)
         (gen2/"link").symlink_to("/etc/hostname")
         self.assertEqual(m.inspect({"workspace":"test/one"})["candidateDigest"],before)
+    def test_runtime_bytecode_cache_does_not_block_clone_or_inspect(self):
+        cache=self.base/"bridge/__pycache__";cache.mkdir(parents=True)
+        (cache/"mod.cpython-312.pyc").write_bytes(b'\x42\x0d\x0d\x0a\x00\xff')
+        self.clone("one")
+        self.assertFalse((m.ROOT/"test/one/bridge/__pycache__").exists())
+        before=m.inspect({"workspace":"test/one"})["candidateDigest"]
+        cache2=m.ROOT/"test/one/bridge/__pycache__";cache2.mkdir(parents=True)
+        (cache2/"mod.cpython-312.pyc").write_bytes(b'\x42\x0d\x0d\x0a\x00\xff')
+        (m.ROOT/"test/one/loose.pyc").write_bytes(b'\x00\xff')
+        self.assertEqual(m.inspect({"workspace":"test/one"})["candidateDigest"],before)
+        (m.ROOT/"test/one/real.bin").write_bytes(b'\x00\xff')
+        with self.assertRaisesRegex(ValueError,'PATCH_BINARY_SOURCE'):m.inspect({"workspace":"test/one"})
     def test_source_symlinks_are_rejected(self):
         (self.base/'escape').symlink_to('/etc/hostname')
         with self.assertRaisesRegex(ValueError,'SOURCE_SYMLINK'):self.clone('one')
