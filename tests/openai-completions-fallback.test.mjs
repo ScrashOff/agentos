@@ -236,3 +236,228 @@ test('streaming reports production without ever carrying generated content', asy
   const serialized = JSON.stringify(reports);
   assert.ok(!serialized.includes('primeiro') && !serialized.includes('segundo'));
 });
+
+
+// Offline clock and controlled streams: no provider, real-time sleep or database.
+function semanticClock() {
+  let time=0, sequence=0;
+  const pending=new Map();
+  return {now:()=>time, pending,
+    timers:{
+      setTimeout(fn,delay){ const id=++sequence; pending.set(id,{at:time+delay,fn}); return id; },
+      clearTimeout(id){ pending.delete(id); },
+    },
+    advance(ms){
+      time+=ms;
+      while(true){
+        const next=[...pending].filter(([,t])=>t.at<=time).sort((a,b)=>a[1].at-b[1].at)[0];
+        if(!next) break;
+        pending.delete(next[0]); next[1].fn();
+      }
+    },
+  };
+}
+const flushStream=()=>new Promise(resolve=>setImmediate(resolve));
+const eventBytes=value=>Buffer.from(`data: ${typeof value==='string'?value:JSON.stringify(value)}\n\n`);
+function semanticFixture({idleTimeoutMs=100,signal,cancel}={}) {
+  const clock=semanticClock(), reports=[], failures=[];
+  let control, calls=0, cancelled=0;
+  const response=new Response(new ReadableStream({
+    start(controller){control=controller;},
+    cancel(reason){cancelled++;return cancel?.(reason);},
+  }),{headers:{'content-type':'text/event-stream'}});
+  const provider=openAICompletionsFallback({fetch:async()=>{calls++;return response;},
+    idleTimeoutMs,now:clock.now,timers:clock.timers,random:()=>0});
+  const result=provider.streamSimple(model,{messages:[]},{apiKey:'private-test-key',signal,
+    onProgress:value=>reports.push(value),onFailure:value=>failures.push(value)}).result();
+  const outcome=result.then(value=>({value}),error=>({error}));
+  return {clock,reports,failures,outcome,result,
+    enqueue:value=>control.enqueue(eventBytes(value)),
+    raw:value=>control.enqueue(Buffer.from(value)),
+    close:()=>control.close(),error:error=>control.error(error),
+    calls:()=>calls,cancellations:()=>cancelled};
+}
+
+test('semantic progress permits a stream longer than twelve minutes and clears its timer',async()=>{
+  const f=semanticFixture({idleTimeoutMs:300000});
+  await flushStream();
+  for(let i=0;i<8;i++){
+    f.clock.advance(200000);
+    f.enqueue({choices:[{delta:{content:'x'}}]});
+    await flushStream();
+  }
+  assert.ok(f.clock.now()>720000,'exercise the old absolute deadline');
+  f.enqueue({choices:[{delta:{},finish_reason:'stop'}]});
+  f.enqueue('[DONE]'); f.close();
+  const result=await f.outcome;
+  assert.equal(result.error,undefined);
+  assert.equal(result.value.content[0].text,'xxxxxxxx');
+  assert.equal(f.calls(),1);
+  assert.equal(f.clock.pending.size,0);
+  assert.equal(f.reports.at(-1).done,true);
+  assert.equal(f.reports.at(-1).semanticCharacters,8);
+  assert.equal(f.reports.at(-1).toolCharacters,0);
+  assert.ok(f.reports.every(r=>r.semanticCharacters>0));
+});
+
+test('idle watchdog covers silent response headers and exposes only its typed diagnostic',async()=>{
+  const clock=semanticClock(),diagnostics=[];let calls=0,transportEnded=false;
+  const provider=openAICompletionsFallback({idleTimeoutMs:100,now:clock.now,timers:clock.timers,
+    fetch:async(_url,{signal})=>{calls++;return new Promise((_resolve,reject)=>{
+      signal.addEventListener('abort',()=>{transportEnded=true;reject(signal.reason);},{once:true});
+    });}});
+  const outcome=provider.streamSimple(model,{messages:[]},{apiKey:'private-test-key',
+    onFailure:value=>diagnostics.push(value)}).result().then(value=>({value}),error=>({error}));
+  clock.advance(101);
+  const result=await outcome;
+  assert.equal(result.error.code,'MODEL_IDLE_TIMEOUT');
+  assert.equal(transportEnded,true);assert.equal(calls,1);
+  assert.deepEqual(diagnostics,[{code:'MODEL_IDLE_TIMEOUT'}]);
+  assert.equal(clock.pending.size,0);
+  assert.ok(!JSON.stringify(diagnostics).includes('private-test-key'));
+});
+
+test('a semantic delta renews idle time, but a later silent body fails without replay',async()=>{
+  const f=semanticFixture();await flushStream();
+  f.clock.advance(70);f.enqueue({choices:[{delta:{content:'a'}}]});await flushStream();
+  f.clock.advance(70);
+  assert.equal(f.cancellations(),0,'a real delta renewed the window');
+  f.clock.advance(31);
+  const result=await f.outcome;
+  assert.equal(result.error.code,'MODEL_IDLE_TIMEOUT');
+  assert.equal(f.cancellations(),1);assert.equal(f.calls(),1);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('keepalives, usage, empty deltas and repeated tool identity cannot renew semantic idle',async()=>{
+  const f=semanticFixture();await flushStream();
+  f.enqueue({choices:[{delta:{tool_calls:[{index:0,id:'c1',function:{name:'write'}}]}}]});
+  await flushStream();
+  const initial=f.reports[0].semanticCharacters;
+  f.clock.advance(60);
+  f.raw(': heartbeat\n\n');
+  f.enqueue({usage:{completion_tokens:999},choices:[]});
+  f.enqueue({choices:[{delta:{content:'',reasoning_content:'',tool_calls:[{index:0,id:'c1',function:{name:'write',arguments:''}}]}}]});
+  await flushStream();
+  assert.equal(f.reports.length,1,'byte/chunk activity must not emit semantic progress');
+  assert.equal(initial,'c1write'.length);
+  f.clock.advance(41);
+  const result=await f.outcome;
+  assert.equal(result.error.code,'MODEL_IDLE_TIMEOUT');assert.equal(f.calls(),1);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('new reasoning, tool name, id and arguments each renew the watchdog',async()=>{
+  const f=semanticFixture();await flushStream();
+  for(const delta of [
+    {reasoning_content:'analyze'},
+    {tool_calls:[{index:0,id:'c1'}]},
+    {tool_calls:[{index:0,function:{name:'write'}}]},
+    {tool_calls:[{index:0,function:{arguments:'{'}}]},
+    {tool_calls:[{index:0,function:{arguments:'}'}}]},
+  ]){
+    f.clock.advance(70);f.enqueue({choices:[{delta}]});await flushStream();
+  }
+  f.enqueue({choices:[{delta:{},finish_reason:'tool_calls'}]});f.enqueue('[DONE]');f.close();
+  const result=await f.outcome;
+  assert.equal(result.error,undefined);assert.equal(result.value.stopReason,'toolUse');
+  assert.equal(f.reports.at(-1).toolCharacters,2);
+  assert.equal(f.reports.at(-1).semanticCharacters,'analyzec1write{}'.length);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('caller abort awaits transport cancellation before rejection and never replays',async()=>{
+  const caller=new AbortController();let finishCancel,settled=false;
+  const f=semanticFixture({signal:caller.signal,cancel:()=>new Promise(resolve=>{finishCancel=resolve;})});
+  f.outcome.then(()=>{settled=true;});await flushStream();
+  f.enqueue({choices:[{delta:{content:'partial'}}]});await flushStream();
+  caller.abort();await flushStream();
+  assert.equal(f.cancellations(),1);
+  assert.equal(settled,false,'the outer gate must keep its permit until cancel settles');
+  finishCancel();
+  const result=await f.outcome;
+  assert.equal(result.error.code,'CANCELLED');assert.equal(f.calls(),1);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('caller cancellation wins when it races an idle timeout during transport cleanup',async()=>{
+  const caller=new AbortController();let finishCancel;
+  const f=semanticFixture({signal:caller.signal,cancel:()=>new Promise(resolve=>{finishCancel=resolve;})});
+  await flushStream();f.clock.advance(101);await flushStream();
+  caller.abort();finishCancel();
+  const result=await f.outcome;
+  assert.equal(result.error.code,'CANCELLED');assert.equal(f.calls(),1);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('transport failure after any semantic delta is terminal even inside the retry budget',async()=>{
+  const f=semanticFixture();await flushStream();
+  f.enqueue({choices:[{delta:{reasoning_content:'private reasoning fragment'}}]});await flushStream();
+  f.error(Error('private upstream failure'));
+  const result=await f.outcome;
+  assert.equal(result.error.code,'MODEL_INCOMPLETE_RESPONSE');assert.equal(f.calls(),1);
+  assert.equal(f.clock.pending.size,0);
+  assert.deepEqual(f.failures,[{code:'MODEL_INCOMPLETE_RESPONSE'}]);
+  assert.ok(!JSON.stringify(f.failures).includes('private'));
+});
+
+test('EOF with partial tool arguments is terminal and never replayed as a fresh request',async()=>{
+  const f=semanticFixture();await flushStream();
+  f.enqueue({choices:[{delta:{tool_calls:[{index:0,id:'c1',function:{name:'write',arguments:'{'}}]}}]});
+  await flushStream();f.close();
+  const result=await f.outcome;
+  assert.equal(result.error.code,'MODEL_INCOMPLETE_RESPONSE');assert.equal(f.calls(),1);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('a truly empty SSE body may still use the existing bounded retry policy',async()=>{
+  const s=stub([
+    new Response('',{headers:{'content-type':'text/event-stream'}}),reply('recovered'),
+  ]);
+  const result=await run(s.fetch);
+  assert.equal(result.content[0].text,'recovered');assert.equal(s.calls.length,2);
+});
+
+test('empty SSE retries stop at the existing attempt limit',async()=>{
+  const s=stub(Array.from({length:RETRY_ATTEMPTS},()=>
+    new Response('',{headers:{'content-type':'text/event-stream'}})));
+  await assert.rejects(run(s.fetch),{code:'MODEL_INCOMPLETE_RESPONSE'});
+  assert.equal(s.calls.length,RETRY_ATTEMPTS);
+});
+
+test('a truncated first SSE frame never replays before it can be parsed semantically',async()=>{
+  const f=semanticFixture();await flushStream();
+  f.raw('data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{');
+  await flushStream();f.close();
+  const result=await f.outcome;
+  assert.equal(result.error.code,'MODEL_INCOMPLETE_RESPONSE');
+  assert.equal(f.calls(),1);assert.equal(f.reports.length,0);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('a malformed first SSE frame is terminal even without a valid content delta',async()=>{
+  const f=semanticFixture();await flushStream();
+  f.raw('data: invalid-json\n\n');
+  const result=await f.outcome;
+  assert.equal(result.error.code,'MODEL_INCOMPLETE_RESPONSE');
+  assert.equal(f.calls(),1);assert.equal(f.reports.length,0);
+  assert.equal(f.cancellations(),1);assert.equal(f.clock.pending.size,0);
+});
+
+test('partial SSE framing prevents replay but cannot renew idle time',async()=>{
+  const f=semanticFixture();await flushStream();
+  f.clock.advance(70);f.raw('data: {"choices":');await flushStream();
+  f.clock.advance(31);
+  const result=await f.outcome;
+  assert.equal(result.error.code,'MODEL_IDLE_TIMEOUT');
+  assert.equal(f.calls(),1);assert.equal(f.reports.length,0);
+  assert.equal(f.clock.pending.size,0);
+});
+
+test('already cancelled callers make no fetch and create no timer',async()=>{
+  const clock=semanticClock(),caller=new AbortController();let calls=0;caller.abort();
+  const result=openAICompletionsFallback({fetch:async()=>{calls++;return reply();},timers:clock.timers,now:clock.now})
+    .streamSimple(model,{messages:[]},{signal:caller.signal}).result();
+  await assert.rejects(result,{code:'CANCELLED'});
+  assert.equal(calls,0);assert.equal(clock.pending.size,0);
+});

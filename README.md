@@ -14,6 +14,8 @@ O [plano da próxima etapa](docs/CONTINUOUS-DELIVERY-PLAN.txt) prioriza insumos 
 
 O [registro de insumos por objetivo](docs/OBJECTIVE-INPUTS.txt) recebe bytes originais de um operador autenticado, verifica integridade e proveniência e os transporta para futuras tarefas e QA dos requisitos indicados. Tentativas já iniciadas e critérios permanecem preservados. O registro não busca arquivos arbitrários no host nem comprova recuperação sem intervenção.
 
+O [controle de progresso do modelo](docs/MODEL-PROGRESS-AND-PYTHON-CACHE.txt) distingue resposta longa de silêncio real e mantém caches Python fora do fonte das candidatas. O [exemplo de controlador Open Kernel](examples/openkernel-controller/README.md) demonstra uma fila de efeitos externos com identidade, cotas e reconciliação; ele não é instalado automaticamente nem inclui contas ou resultados da operação.
+
 A publicação contém uma cópia sanitizada do código, com histórico novo. Credenciais, bancos, sessões, memórias privadas, relatórios operacionais, dados dos projetos e scripts específicos de operações não fazem parte deste repositório. Hosts e identificadores de instalação foram substituídos por exemplos.
 
 ## Componentes

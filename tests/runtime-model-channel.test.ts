@@ -135,3 +135,19 @@ it('preserves explicit caller cancellation even when it races a provider timeout
   expect(await result.promise).toBe('CANCELLED');
   expect(await response.text()).toContain('"message":"CANCELLED"');
 });
+
+
+it('preserves semantic-idle diagnosis and never publishes a partial completion on that failure', async () => {
+ const url = await endpoint((_req, res) => {
+   const channel = bufferedModelChannel(res, new AbortController().signal);
+   try {
+     channel.start();
+     const code = channel.failureCode(Object.assign(new Error('MODEL_IDLE_TIMEOUT'), {code:'MODEL_IDLE_TIMEOUT'}));
+     channel.fail(code);
+   } finally {channel.dispose();}
+ });
+ const body = await (await fetch(url)).text();
+ expect(body).toContain('"message":"MODEL_IDLE_TIMEOUT"');
+ expect(body).not.toContain('[DONE]');
+ expect(body).not.toContain('tool_calls');
+});

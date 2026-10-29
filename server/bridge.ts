@@ -6,6 +6,70 @@ import { config } from './config.js';
 import { DomainError } from './contracts.js';
 import { bridgeScript, localBridgeScript } from './bridge-path.js';
 
+const requestIdentity = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const counter = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+/** Count real progress within requests announced by the trusted runtime.
+ * Presence, SSE keepalives and replayed observations do not establish progress.
+ * This state only renews liveness; it never grants acceptance or stop authority. */
+function workerProgress() {
+  let lastRequest = 0, lastResponse = 0, lastTool = 0;
+  const seen = new Set<string>();
+  const active = new Map<string, { requests: number; counters: number[] }>();
+  return (kind: string, payload: Record<string, unknown> = {}) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    const id = payload.requestId;
+    const requests = payload.requests;
+    if (kind === 'MODEL_REQUEST') {
+      if (typeof id === 'string' && requestIdentity.test(id) && !seen.has(id) &&
+          counter(requests) && requests === lastRequest + 1) {
+        lastRequest = requests;
+        seen.add(id);
+        active.set(id, { requests, counters: [0, 0, 0, 0] });
+      }
+      return false;
+    }
+    if (kind === 'MODEL_STREAM_PROGRESS') {
+      const request = typeof id === 'string' ? active.get(id) : undefined;
+      if (!request) return false;
+      const values = [payload.characters, payload.reasoningCharacters,
+        payload.toolCharacters, payload.semanticCharacters];
+      if (!values.every(counter)) return false;
+      const next = values as number[];
+      const sum = next[0] + next[1] + next[2];
+      const previousSum = request.counters[0] + request.counters[1] + request.counters[2];
+      if (!Number.isSafeInteger(sum) || next[3] < sum ||
+          next.some((value, i) => value < request.counters[i]) ||
+          next[3] <= request.counters[3] ||
+          next[3] - request.counters[3] < sum - previousSum) return false;
+      request.counters = next;
+      return true;
+    }
+    if (kind === 'MODEL_RESPONSE') {
+      if (!counter(requests)) return false;
+      // Older bridges emit only the monotonic requests counter. New bridges
+      // must complete the exact request they previously announced.
+      if (id !== undefined && (typeof id !== 'string' || active.get(id)?.requests !== requests))
+        return false;
+      // Concurrent gateway calls may finish out of sequence. Retire their
+      // identity even when the response counter cannot renew the deadline.
+      if (typeof id === 'string') active.delete(id);
+      if (requests <= lastResponse) return false;
+      lastResponse = requests;
+      return true;
+    }
+    if (kind === 'MODEL_ERROR') {
+      if (typeof id === 'string' && active.get(id)?.requests === requests) active.delete(id);
+      return false;
+    }
+    if (kind === 'HARNESS_TOOL_EVENT' && counter(payload.toolEvents) && payload.toolEvents > lastTool) {
+      lastTool = payload.toolEvents;
+      return true;
+    }
+    return false;
+  };
+}
+
 export class AccountBridge {
   child?: ChildProcessWithoutNullStreams;
   pending = new Map<
@@ -19,7 +83,7 @@ export class AccountBridge {
       method: string;
       cancelError?: DomainError;
       onEvent?: (kind: string, payload: Record<string, unknown>) => void;
-      onProgress?: (kind: string) => void;
+      onProgress?: (kind: string, payload: Record<string, unknown>) => void;
     }
   >();
   connect() {
@@ -94,7 +158,7 @@ export class AccountBridge {
       const p = this.pending.get(message.id);
       if (!p) return;
       if (message.event) {
-        p.onProgress?.(message.event.kind);
+        p.onProgress?.(message.event.kind, message.event.payload);
         p.onEvent?.(message.event.kind, message.event.payload);
         return;
       }
@@ -171,9 +235,10 @@ export class AccountBridge {
       }, options.idleTimeout ?? options.timeout ?? 25000);
       // Liveness is separate from acceptance. Heartbeats, queue presence and
       // request-start notifications do not renew a worker's inactivity window.
-      const onProgress = options.idleTimeout === undefined ? undefined : (kind: string) => {
+      const progressed = workerProgress();
+      const onProgress = options.idleTimeout === undefined ? undefined : (kind: string, payload: Record<string, unknown>) => {
         const p = this.pending.get(id);
-        if (p && !p.cancelError && ['MODEL_RESPONSE', 'HARNESS_TOOL_EVENT'].includes(kind))
+        if (p && !p.cancelError && progressed(kind, payload))
           p.timer.refresh();
       };
       const cleanup = () => options.signal?.removeEventListener('abort', abort);

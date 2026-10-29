@@ -31,7 +31,7 @@ import {
 } from '../server/worker-rollout.js';
 
 const readinessOwners: any[] = [];
-it('binds readiness to publication bytes including docs and dist while ignoring dependency/test directories and symlinks', async () => {
+it('binds readiness to publication bytes including docs and dist while ignoring dependency/test directories, runtime bytecode caches and symlinks', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'agentos-readiness-'));
   try {
     for (const name of ['docs', 'dist', 'node_modules', '.local-test', '.git']) {
@@ -47,6 +47,11 @@ it('binds readiness to publication bytes including docs and dist while ignoring 
       .digest('hex');
     expect(await workerSourceDigest(directory)).toBe(expected);
     await writeFile(path.join(directory, 'node_modules/file.txt'), 'mutable');
+    expect(await workerSourceDigest(directory)).toBe(expected);
+    await mkdir(path.join(directory, 'bridge/__pycache__'), { recursive: true });
+    await writeFile(path.join(directory, 'bridge/__pycache__/mod.cpython-312.pyc'), 'bytecode');
+    expect(await workerSourceDigest(directory)).toBe(expected);
+    await writeFile(path.join(directory, 'bridge/__pycache__/mod.cpython-312.pyc'), 'regenerated');
     expect(await workerSourceDigest(directory)).toBe(expected);
     await writeFile(path.join(directory, 'docs/file.txt'), 'changed documentation');
     const updated = await workerSourceDigest(directory);

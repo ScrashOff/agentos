@@ -392,6 +392,7 @@ async function executeOpenCode(params, signal, emit) {
       ]),
       '--bind', home, '/home/agent', '--ro-bind', sock, '/run/model.sock',
       '--chdir', '/workspace', '--clearenv', '--setenv', 'HOME', '/home/agent',
+      '--setenv', 'PYTHONPYCACHEPREFIX', '/home/agent/.cache/python',
       '--setenv', 'PATH', '/opt/deepseek-harness/node/bin:/usr/bin:/bin',
       '--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/browsers', '--setenv', 'LANG', 'C.UTF-8',
       '--', NODE, '/opt/agentos-bridge/opencode-sandbox.mjs',

@@ -2,7 +2,7 @@
 // consume the opportunity to repair the first semantic plan error.
 export function planningRecovery(code:string, invalid:boolean, cancelled:boolean, previous:Record<string,number>={}) {
   const category = code === 'STOP_UNCONFIRMED' ? 'external' : cancelled ? 'interruption' : invalid ? 'invalid_plan' :
-    ['PROVIDER_TIMEOUT','MODEL_TIMEOUT','MODEL_REQUEST_FAILED','MODEL_INCOMPLETE_RESPONSE',
+    ['PROVIDER_TIMEOUT','MODEL_TIMEOUT','MODEL_IDLE_TIMEOUT','MODEL_REQUEST_FAILED','MODEL_INCOMPLETE_RESPONSE',
       'MODEL_OUTPUT_LIMIT','MISSING_MODEL_RESPONSE','RATE_LIMIT','SOURCE_BUSY','HOST_CAPACITY',
       'BRIDGE_DISCONNECTED','ACCOUNT_UNAVAILABLE','GLM_GATE_UNAVAILABLE'].includes(code) ? 'transient' : 'external';
   const count = (Number.isSafeInteger(previous[category]) ? previous[category] : 0)+1;

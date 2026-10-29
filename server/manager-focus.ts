@@ -195,7 +195,7 @@ export function selectManagerCaseWindow(cases:any[],focus:any) {
   if(!focus)return cases.slice(0,6);
   const focal=cases.find(entry=>entry.id===focus.caseId);
   if(!focal)return [];
-  const transient=new Set(['MODEL_TIMEOUT','PROVIDER_TIMEOUT','MODEL_REQUEST_FAILED']);
+  const transient=new Set(['MODEL_TIMEOUT','MODEL_IDLE_TIMEOUT','PROVIDER_TIMEOUT','MODEL_REQUEST_FAILED']);
   const currentStopped=(entry:any)=>entry.id!==focal.id && entry.state!=='decided' && entry.decision_run_id==null &&
     entry.has_live_run!==true && entry.current_run_state==='failed' &&
     (entry.source_run_id==null || entry.source_run_id===entry.current_run_id);

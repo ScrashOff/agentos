@@ -12,7 +12,7 @@ def _root(variable,provisioned,fallback):
     return target.resolve()
 ROOT=_root('AGENTOS_WORKSPACES_ROOT','/srv/agentos/workspaces','.local/workspaces')
 DATA=_root('AGENTOS_BRIDGE_DATA','/var/lib/agentos-bridge','.local/bridge')
-SKIP={'.git','node_modules','evidence','data','.agentos-snapshot.json','.local-test','test-results','playwright-report'}
+SKIP={'.git','node_modules','evidence','data','.agentos-snapshot.json','.local-test','test-results','playwright-report','__pycache__'}
 def digest_key(value): return hashlib.sha256(value.encode()).hexdigest()
 def workspace(value):
     if not re.fullmatch(r'[a-z0-9_-]+/[a-z0-9_-]+',value): raise ValueError('INVALID_WORKSPACE')
@@ -48,7 +48,7 @@ def sources(root):
         for d in dirs:
             if (pathlib.Path(folder)/d).is_symlink(): raise ValueError('SOURCE_SYMLINK')
         for name in sorted(files):
-            if name in SKIP or name.startswith('.env') or name.endswith('.log'): continue
+            if name in SKIP or name.startswith('.env') or name.endswith('.log') or name.endswith('.pyc'): continue
             p=pathlib.Path(folder)/name
             fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
             with os.fdopen(fd,'rb') as f:

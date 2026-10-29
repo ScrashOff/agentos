@@ -66,3 +66,10 @@ test('typed truncated output survives RPC without reflecting model or private di
  assert.equal(wire(new Error('MODEL_OUTPUT_LIMIT')).code,'PROVIDER_ERROR');
  assert.equal(JSON.stringify(wire(typed('MODEL_OUTPUT_LIMIT'))).includes('private diagnostic sentinel'),false);
 });
+
+
+test('typed semantic-idle timeout crosses RPC without leaking provider text',()=>{
+ assert.equal(wire(typed('MODEL_IDLE_TIMEOUT')).code,'MODEL_IDLE_TIMEOUT');
+ assert.equal(wire(new Error('MODEL_IDLE_TIMEOUT')).code,'PROVIDER_ERROR');
+ assert.equal(JSON.stringify(wire(typed('MODEL_IDLE_TIMEOUT'))).includes('private diagnostic sentinel'),false);
+});

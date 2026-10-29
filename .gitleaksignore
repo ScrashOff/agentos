@@ -1,0 +1,4 @@
+# Historical test fixtures contained internal account identifiers, not credentials.
+# Current fixtures use synthetic identifiers. Exempt only these exact old findings.
+4455ad61d57274f8c37d33ff36f1b3cd44d528e3:tests/generation-timing.test.ts:generic-api-key:4
+b4bb5c506b61bc860d453b22fc028bdf419f37d0:tests/gated-generation.test.mjs:generic-api-key:364
