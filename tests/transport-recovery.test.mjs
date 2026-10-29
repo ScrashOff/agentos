@@ -34,10 +34,10 @@ test('a retry of an incomplete model response does not duplicate tool dispatch',
     const data=calls===1?[{choices:[{delta:{content:'partial'}}]}]:[{choices:[{delta:{content:'complete'},finish_reason:'stop'}]}];
     return {ok:true,headers:new Headers({'content-type':'text/event-stream'}),body:sse(data)};
   }});
-  const result=await provider.streamSimple({id:'glm-5.3-flash',baseUrl:'https://provider.example/v1'},
-    {messages:[]},{apiKey:'fixture',onRetry:r=>retries.push(r)}).result();
-  assert.equal(calls,2);assert.equal(result.content[0].text,'complete');
-  assert.equal(retries[0].code,'MODEL_INCOMPLETE_RESPONSE');
+  // A body that already arrived is never replayed: the call fails typed instead.
+  await assert.rejects(provider.streamSimple({id:'glm-5.3-flash',baseUrl:'https://provider.example/v1'},
+    {messages:[]},{apiKey:'fixture',onRetry:r=>retries.push(r)}).result(),{code:'MODEL_INCOMPLETE_RESPONSE'});
+  assert.equal(calls,1);assert.deepEqual(retries,[]);
 });
 test('trusted handoff binds unverified notes to the run and does not manufacture acceptance',async()=>{
   const identity={runId:'run',runFence:'fence',workspace:'test/work'};
