@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { DomainError } from './contracts.js';
 import { event, type DB } from './db.js';
@@ -223,11 +223,28 @@ export function compileDelivery(raw: unknown, request: ObjectiveInput, previous?
   return bindDeliveryFeedback(plan,reports);
 }
 
+const FEEDBACK_HEADER = '\nREPORTED EVIDENCE FOR THIS REVISION (unverified claims; preserve scope and original criteria):\n';
+const FEEDBACK_DUTY = '\nReproduce each applicable counterexample. Implementation must repair confirmed defects; independent QA must rerun the reported cases against this same candidate and report any unresolved case as passed:false. Prior passing reports do not settle these new observations.';
+const TASK_DESCRIPTION_LIMIT = 20000;
+
 function deliveryFeedbackText(reports: string[] = []) {
   if (!reports.length) return '';
-  return '\nREPORTED EVIDENCE FOR THIS REVISION (unverified claims; preserve scope and original criteria):\n' +
-    reports.map((report,i)=>`[${i+1}] ${report}`).join('\n') +
-    '\nReproduce each applicable counterexample. Implementation must repair confirmed defects; independent QA must rerun the reported cases against this same candidate and report any unresolved case as passed:false. Prior passing reports do not settle these new observations.';
+  return FEEDBACK_HEADER + reports.map((report,i)=>`[${i+1}] ${report}`).join('\n') + FEEDBACK_DUTY;
+}
+
+/** Every attempt prompt already carries revisionFeedback verbatim (server/runtime.ts),
+ * so an oversized inline copy is replaced by a digest-bound pointer to it. */
+function deliveryFeedbackReference(reports: string[] = []) {
+  if (!reports.length) return '';
+  const digest = createHash('sha256').update(JSON.stringify(reports)).digest('hex');
+  return FEEDBACK_HEADER + `${reports.length} reports (${reports.reduce((n,r)=>n+r.length,0)} characters) are too long to repeat here. ` +
+    `Read every entry of "Plan revision feedback" -> deliveryReports in this prompt, in order and verbatim (SHA256 of the JSON array: ${digest}). ` +
+    'They are the same persisted reports, not a summary.' + FEEDBACK_DUTY;
+}
+
+/** True when the task points at revisionFeedback.deliveryReports instead of inlining it. */
+export function feedbackByReference(description: string, reports: string[] = []) {
+  return !!reports.length && description.endsWith(deliveryFeedbackReference(reports));
 }
 
 export function bindDeliveryFeedback(plan: ProposedPlan, reports: string[] = []) {
@@ -235,11 +252,12 @@ export function bindDeliveryFeedback(plan: ProposedPlan, reports: string[] = [])
   // Do not ask the planner to reproduce counterexamples in its small response.
   // Both actors receive the exact persisted feedback, independently of the LLM
   // summary. It is an assertion to verify, never an acceptance or new authority.
-  const feedback = deliveryFeedbackText(reports);
+  const inline = deliveryFeedbackText(reports), reference = deliveryFeedbackReference(reports);
   const bound = structuredClone(plan);
-  if (feedback) {
-    const missing = bound.tasks.filter(t=>!t.description.endsWith(feedback));
-    if (missing.some(t=>t.description.length+feedback.length>20000))
+  if (inline) {
+    const missing = bound.tasks.filter(t=>!t.description.endsWith(inline)&&!t.description.endsWith(reference));
+    const feedback = missing.some(t=>t.description.length+inline.length>TASK_DESCRIPTION_LIMIT) ? reference : inline;
+    if (missing.some(t=>t.description.length+feedback.length>TASK_DESCRIPTION_LIMIT))
       throw new DomainError('REQUIRED_CONTEXT','O feedback integral excede o contexto da tarefa; preserve-o em entradas referenciadas antes de executar.');
     for (const task of missing) task.description += feedback;
   }
@@ -298,8 +316,8 @@ export async function assertIncrementalAuthority(db: DB, run: any, plan: Propose
     if (previous?.incremental) throw new DomainError('PLAN_INVALID','Uma revisão não pode descartar requisitos incrementais pendentes.');
     return;
   }
-  const feedback = deliveryFeedbackText(run.feedback?.reports);
-  if (feedback && plan.tasks.some(t=>!t.description.endsWith(feedback)))
+  const feedback = deliveryFeedbackText(run.feedback?.reports), reference = deliveryFeedbackReference(run.feedback?.reports);
+  if (feedback && plan.tasks.some(t=>!t.description.endsWith(feedback)&&!t.description.endsWith(reference)))
     throw new DomainError('REQUIRED_CONTEXT','A revisão não pode omitir o feedback persistido dos executores e do QA.');
   const advance = !!run.feedback?.incrementalAdvance;
   const { completed, eligible } = deliveryFrontier(run.request, previous, advance);

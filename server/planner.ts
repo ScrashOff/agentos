@@ -17,7 +17,7 @@ import {
   type ProposedPlan,
 } from './objective-contracts.js';
 import { planningContext } from './planning-context.js';
-import { incrementalEligible, deliveryFrontier, deliveryDecisionSchema, compileDelivery, bindDeliveryFeedback, queueNextDelivery, assertIncrementalAuthority } from './incremental-planning.js';
+import { incrementalEligible, deliveryFrontier, deliveryDecisionSchema, compileDelivery, bindDeliveryFeedback, feedbackByReference, queueNextDelivery, assertIncrementalAuthority } from './incremental-planning.js';
 import {readObjectiveInputs,inputsForRequirements} from './objective-inputs.js';
 import {planningInputContext,planningInputInstruction} from './planning-input-context.js';
 import {reconcileInheritedCancellation} from './objective-state-repair.js';
@@ -594,7 +594,8 @@ export async function applyPlannedResult(run: any, plan: ProposedPlan) {
         const inputs=inputsForRequirements(operatorInputs,t.covers);
         const execution = {
           ...executionSpec(run.objective_id, revision, t, plan),
-          revisionFeedback: run.feedback,
+          revisionFeedback: feedbackByReference(t.description,run.feedback?.reports)
+            ? {...run.feedback,deliveryReports:run.feedback.reports} : run.feedback,
           ...(inputs.length?{inputs}:{}),
         };
         const parentTaskId = t.parentKey ? ids.get(t.parentKey) : null;

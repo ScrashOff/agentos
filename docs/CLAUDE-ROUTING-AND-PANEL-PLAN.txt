@@ -1,0 +1,56 @@
+PLANO: PAINEL AO VIVO, ROTEAMENTO POR PAPEL (CLAUDE/VERBOO) E RESSALVAS
+Registrado em 2026-10-28. Diagnóstico feito sobre o código e os dados da VPS.
+
+DIAGNÓSTICO
+- Contas "sem chamadas em 30 min": provider-health conta eventos MODEL_RESPONSE/
+  MODEL_ERROR pelo payload.accountId; os eventos atuais não trazem accountId
+  (100 respostas em 30 min, todas sem conta), mas trazem runId.
+- Visão geral "0 entregas aceitas": main.tsx conta tasks aceitas numa lista da
+  qual panelState já exclui as aceitas. accepted_count por goal já vem do servidor.
+- "Objetivos em movimento": panelState ordena por created_at DESC e a tela faz
+  slice(-4).reverse() sem filtro de estado (mostra os 4 mais antigos).
+- Organização: organograma estático (tabela agents); nenhum dado ao vivo.
+- Autonomia: lê /var/lib/agentos-autonomy/latest.json, que nenhum processo gera.
+- Modelo da tarefa: run.account_id/run.model já chegam ao painel; só aparecem
+  dentro de "Ver agentes".
+- Roteamento: claim em service.ts usa a primeira conta livre por ORDER BY id
+  (Verboo antes de Claude). Workforce/coordenador não aceitam provider claude;
+  managerAuthoritySql só reconhece codex sol ou GLM. Saúde do provedor não
+  influencia rota. Verboo (48h): média 84 min por tarefa aceita, máx. 4 h,
+  16 MODEL_TIMEOUT, 11 MODEL_REQUEST_FAILED.
+
+FASE 1 — PAINEL/API (publicar reiniciando só agentos-api)
+1. Saúde das contas a partir de runs (payload.runId -> runs.account_id).
+2. Entregas aceitas reais; "em movimento" só em andamento, mais novos primeiro.
+3. Modelo · conta da tarefa em execução nos cards de objetivo, visão geral e
+   painel da operação.
+4. Organização ao vivo: operador -> contas (carga x vagas) -> runs em execução.
+5. Autonomia calculada no API a partir do banco, sem texto fixo "GLM exclusivo".
+6. Objetivos antigos em waiting_external com goal cancelado -> cancelled.
+
+FASE 2 — ROTEAMENTO POR PAPEL (exige reiniciar agentos-workers numa janela
+sem run vivo, ou drenar a fila)
+1. Configuração model-routes (global, sobrescrevível por objetivo):
+   planejamento, coordenação/gerência e verificação -> Claude Opus 5.5;
+   trabalho focado (work/integrate/repair) -> Claude Haiku 5.5;
+   Verboo -> reserva lenta, fora de chat/coordenação/verificação.
+2. Perfil de latência por conta (Verboo lenta: timeout maior, duração
+   esperada no painel, detecção de travamento proporcional); ajuste de
+   raciocínio e teto de saída para Haiku.
+3. managerAuthoritySql aceita o coordenador Claude configurado.
+4. Preservar gate de concorrência GLM, model-policy e guardas de publicação;
+   testes de rota e de concorrência.
+
+FASE 3 — RESSALVAS
+1. Ferramentas sem rede: pré-instalar offline (pnpm, Next.js, drizzle) em
+   /opt/agentos-project-deps e/ou fazer o planner pedir decisão em vez de
+   substituir em silêncio. Docker não é viável no sandbox.
+2. Verificação deve criar o banco a partir do schema.sql entregue, não de um
+   banco recriado pelo verificador.
+
+DECISÕES PENDENTES DO USUÁRIO
+- Verificação no Opus (recomendado)?
+- Novo roteamento nos objetivos em andamento ou só nos novos?
+- Aceitar substituições de ferramentas ou pré-instalar e bloquear?
+- Janela da Fase 2: esperar ausência de runs ou drenar a fila?
+- Ao atingir o limite da assinatura Claude, cair para a Verboo?

@@ -148,7 +148,8 @@ const agyModels = [
 ];
 function catalog(family, route, account) {
   if (family === 'agy') return agyModels;
-  if (family === 'muse' && account?.models?.length) return account.models;
+  // Own accounts may list several models (muse, or an API key whose plan grows).
+  if (account?.models?.length) return account.models;
   if (account?.model) return [account.model];
   const native = providers[family]?.getModels().map((m) => m.id) ?? [];
   const inheritedRoute =

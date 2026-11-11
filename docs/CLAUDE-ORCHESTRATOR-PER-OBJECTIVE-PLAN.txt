@@ -1,0 +1,101 @@
+PLANO: CLAUDE COMO ORQUESTRADOR OPCIONAL POR OBJETIVO
+Registrado em 2026-10-28. Status: guardado para depois, nada implementado.
+Substitui a Fase 2 de CLAUDE-ROUTING-AND-PANEL-PLAN.txt (rota global
+Opus/Haiku) por uma escolha feita na criação de cada objetivo.
+
+PONTO DE PARTIDA NO CÓDIGO
+- Já existe configuração por objetivo: settings 'workforce:<goal_id>' com
+  coordinatorAccountId/coordinatorModel (server/workforce-policy.ts).
+- O planner já aceita plannerAccountId/plannerModel por objetivo
+  (server/objective-contracts.ts, server/planner.ts).
+- A conta Claude (família 'claude', rota 'anthropic' no bridge) já existe e
+  fala Messages nativamente.
+- Bloqueios atuais: com /etc/agentos/model-policy.json em 'glm-only',
+  modelRouteAllowed recusa qualquer chamada Claude; managerAuthoritySql só
+  reconhece codex sol ou GLM; o planner escolhe conta por ORDER BY provider.
+
+O QUE O USUÁRIO VÊ
+Na criação do objetivo (web/src/Chat.tsx, modos planejar/executar), campo
+"Orquestrador":
+- Padrão: tudo como hoje.
+- Claude: escolher conta Claude (só ativas e saudáveis), modelo (padrão
+  claude-opus-5-5) e quais momentos-chave ele assume (todos marcados).
+A escolha fica no pedido do objetivo (imutável, entra no hash de
+idempotência). Não muda depois; objetivos existentes não são afetados.
+
+MOMENTOS-CHAVE
+1. Plano inicial: planning_runs (server/planner.ts).
+2. Próxima entrega / replanejamento: server/incremental-planning.ts, feedback.
+3. Coordenação/gerência: etapa 'coordinate', server/manager-authority.ts.
+4. Revisão de falhas: server/objective-review.ts (retry, correção ou replano).
+5. Verificação final: etapa 'verify', Claude lê o código e roda os testes
+   pelo harness.
+work/integrate/repair continuam na força atual (GLM/Verboo). O veredito do
+Claude na verificação é evidência, não aceite: o aceite continua por
+critérios, artefatos e hashes (AGENTS.md).
+
+FASE A — CONTRATO, INTERFACE E POLÍTICA (publicar reiniciando só agentos-api)
+1. objectiveSchema ganha 'orchestrator':
+   { kind: 'default'|'claude', accountId, model, moments[],
+     fallback: 'wait'|'default' }
+   Copiado para settings 'orchestration:<goal_id>' para as consultas SQL.
+2. Model policy v1 aceita bloco opcional definido só pelo operador:
+   orchestration: { accountIds, models }
+   Vale apenas para momentos-chave de objetivos que optaram. Sem o bloco, a
+   opção aparece desabilitada na tela com o motivo. Nenhum prompt ou RPC
+   libera essa rota.
+3. Interface: campo na criação; selo "Orquestrado por Claude Opus 5.5" no
+   card e na árvore; cada execução marca a qual momento-chave pertence.
+4. Ferramenta de criar objetivo do chat (server/chat.ts) aceita o campo.
+Nesta fase o campo é gravado mas não muda a rota; workers o ignoram.
+
+FASE B — ROTEAMENTO (reiniciar agentos-workers em janela sem run vivo)
+1. Planner e decisões incrementais usam o orquestrador do objetivo em vez
+   da ordem de provedores.
+2. managerAuthoritySql reconhece conta+modelo do orquestrador gravado.
+3. Revisão de falhas despachada para o Claude.
+4. Cota da assinatura esgotada:
+   - fallback 'wait' (padrão): momento-chave em waiting_quota, motivo visível;
+   - fallback 'default': cai para o orquestrador padrão, evento
+     ORCHESTRATOR_FALLBACK.
+5. Concorrência: max_concurrency da conta Claude, um coordenador por
+   objetivo; gate de requisições GLM intacto (Claude não passa por ele).
+
+FASE C — VERIFICAÇÃO COM CLAUDE PELO HARNESS
+Etapa 'verify' roda no harness com modelo Claude (Messages, sem tradução),
+com ferramentas dentro do bwrap atual; resultado entra como evidência no
+contrato de entrega.
+
+FASE D — PAINEL
+Por objetivo: chamadas, tokens e tempo por momento-chave; o que foi feito
+pelo Claude e pela força de trabalho; comparação com objetivos padrão.
+
+TESTES (vitest na VPS, dados isolados)
+- orchestrator entra no hash: mesmo pedido com outro orquestrador ->
+  IDEMPOTENCY_CONFLICT.
+- Objetivo Claude roteia para Claude; objetivo padrão mantém a rota de hoje.
+- glm-only sem a exceção recusa Claude; com a exceção, só momentos-chave
+  passam e trabalho comum continua recusado.
+- Um coordenador por objetivo e max_concurrency da conta, com concorrência
+  real no banco.
+- Transições de 'wait' e 'default' quando a cota acaba.
+- Playwright: criar objetivo com Claude e conferir o selo.
+
+DECISÃO TOMADA EM 2026-10-28: opção (a), conta Claude já conectada pelo bridge.
+
+DEPLOY POR FASE
+- Fase A: reinicia só agentos-api (schema, settings, ferramenta do chat e
+  leitura da política vivem no API). agentos-workers, bridge e runs vivos
+  não são tocados. O arquivo de política não precisa mudar nesta fase.
+- Fase B: reinicia agentos-workers em janela sem run vivo.
+
+DECISÃO (registro das alternativas)
+O que "Claude Code" significa:
+(a) Recomendado: conta Claude já conectada (ClaudeOrsiniWork) chamando
+    Opus 5.5 pelo bridge, como este plano assume. Reaproveita cota,
+    contabilidade por conta e sandbox; na verificação usa ferramentas pelo
+    harness.
+(b) Rodar o próprio CLI 'claude' em modo sem interface como novo tipo de
+    execução no sandbox (como o OpenCode). Mais fiel ao nome, bem mais
+    trabalho: novo executor, recuperação, prova de término, e a credencial
+    da assinatura dentro do sandbox.

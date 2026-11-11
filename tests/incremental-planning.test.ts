@@ -1,5 +1,5 @@
 import { beforeAll,beforeEach,afterEach,afterAll,it,expect,vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash,randomUUID } from 'node:crypto';
 import { pool,migrate,tx,lock } from '../server/db.js';
 import { seedRegistry } from '../server/registry.js';
 import { config } from '../server/config.js';
@@ -180,6 +180,25 @@ it('prioritizes new counterexamples over advancement and preserves the accumulat
   await applyPlannedResult(run,repaired);
   expect((await pool.query('SELECT count(*) FROM acceptances WHERE passed=true')).rows[0].count).toBe('2');
 });
+it('binds oversized feedback by digest reference and keeps every report in the attempt prompt',async()=>{
+  const {objectiveId,input,plan}=await start();await acceptBatch(objectiveId,1);
+  const reports=Array.from({length:6},(_,i)=>`Measured counterexample ${i}: `+'shape table row; '.repeat(220));
+  for(const [i,report] of reports.entries())await feedbackObjective(objectiveId,'external-large-'+i,report);
+  await reconcilePlanning();
+  const run=await claimPlanning();
+  expect(run.feedback.reports.slice(0,6)).toEqual(reports);
+  const repaired=compileDelivery(decision(),input,plan,false,run.feedback.reports);
+  for(const task of repaired.tasks){
+    expect(task.description.length).toBeLessThanOrEqual(20000);
+    expect(task.description).toContain('"Plan revision feedback" -> deliveryReports');
+    expect(task.description).not.toContain(reports[0]);
+  }
+  expect(bindDeliveryFeedback(repaired,run.feedback.reports)).toEqual(repaired);
+  await applyPlannedResult(run,repaired);
+  const tasks=(await pool.query("SELECT execution FROM tasks WHERE goal_id=$1 AND plan_revision=2",[objectiveId])).rows;
+  expect(tasks.length).toBeGreaterThan(0);
+  for(const t of tasks)expect(t.execution.revisionFeedback.deliveryReports).toEqual(run.feedback.reports);
+});
 it('leaves active and uncertain attempts unchanged while feedback waits for a safe boundary',async()=>{
   const {objectiveId}=await start();
   const task=(await pool.query("SELECT id FROM tasks WHERE goal_id=$1 AND stage='work'",[objectiveId])).rows[0];
@@ -217,8 +236,12 @@ it('cannot complete with unconsumed feedback and reopens a completed objective w
   expect((await pool.query('SELECT state FROM goals WHERE id=$1',[objectiveId])).rows[0].state).toBe('active');
   expect((await pool.query('SELECT count(*) FROM acceptances WHERE passed=true')).rows[0].count).toBe('6');
 });
-it('fails visibly instead of silently truncating feedback beyond the existing task context limit',()=>{
-  expect(()=>compileDelivery(decision(),request(),undefined,false,['x'.repeat(21000)])).toThrowError(expect.objectContaining({code:'REQUIRED_CONTEXT'}));
+it('never truncates feedback beyond the task context limit; it binds the whole report by digest',()=>{
+  const reports=['x'.repeat(21000)],digest=createHash('sha256').update(JSON.stringify(reports)).digest('hex');
+  for(const task of compileDelivery(decision(),request(),undefined,false,reports).tasks){
+    expect(task.description).toContain(digest);
+    expect(task.description).not.toContain('x'.repeat(100));
+  }
 });
 it('will not advance from a model claim without acceptance or from missing candidate evidence',async()=>{
   const {objectiveId}=await start();
